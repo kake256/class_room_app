@@ -1,0 +1,30 @@
+# 生成物・実行時データ(学生の提出物・採点結果・ログを含む)
+data/
+
+# 認証情報・トークン(バックアップ含む)
+credentials.json
+token.json
+token.json.bak*
+*.bak
+
+# インスタンス固有の設定(コースID・学生ID・courseWorkIdを含む)
+config.yaml
+
+# 内部作業ドキュメント(検証中に学生氏名・IDを含む)
+docs/calibration-policy.md
+
+# 学生の個人情報を含むCSV(氏名・メール・成績)
+*.csv
+
+# サンプル提出物
+samples/*.pdf
+samples/*.png
+
+# 一時ファイル
+dfout.txt
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/

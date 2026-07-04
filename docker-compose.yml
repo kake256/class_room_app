@@ -1,0 +1,42 @@
+services:
+  grader:
+    build: .
+    user: "1002:1002"        # 生成物をホストユーザー所有にする
+    environment:
+      HOME: /tmp             # LibreOffice等がHOMEに書けるように
+    volumes:
+      - ./data:/app/data            # 中間成果物・結果
+      - ./samples:/app/samples      # キャリブレーション用サンプル
+      - ./config.yaml:/app/config.yaml:ro
+      # OAuth 認証情報(事前に credentials.json を配置し `touch token.json`)
+      - ./credentials.json:/app/credentials.json:ro
+      - ./token.json:/app/token.json
+    ports:
+      - "127.0.0.1:8765:8765"   # 初回OAuth認証用(SSH時は -L 8765:localhost:8765 で転送)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # ホストのvLLMへ接続
+    # 使用例:
+    #   docker compose run --rm grader calibrate --dir samples --truth samples/truth.csv
+    #   docker compose run --rm grader watch --coursework <id> --interval 3600
+    #   docker compose run --rm grader report --coursework <id>
+
+  api:
+    build: .
+    user: "1002:1002"
+    environment:
+      HOME: /tmp
+    entrypoint: ["uvicorn", "grader.api:app", "--host", "0.0.0.0", "--port", "8800"]
+    volumes:
+      - ./data:/app/data
+      - ./samples:/app/samples
+      - ./config.yaml:/app/config.yaml:ro
+      - ./credentials.json:/app/credentials.json:ro
+      - ./token.json:/app/token.json
+    ports:
+      - "127.0.0.1:8800:8800"    # localhostのみ公開(学生データを外に出さない)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  test:
+    build: .
+    entrypoint: ["python", "-m", "pytest", "tests/", "-v"]

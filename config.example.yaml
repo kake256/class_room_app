@@ -1,0 +1,42 @@
+# 設定テンプレート。cp config.example.yaml config.yaml して実値を埋める。
+# config.yaml は個人情報(コースID・学生ID・課題ID)を含むため gitignore 対象。
+vllm:
+  base_url: "http://host.docker.internal:8000/v1"   # ホスト直実行なら http://localhost:8000/v1
+  api_key: "EMPTY"
+  model: "Qwen/Qwen2.5-VL-7B-Instruct"   # 一次採点(甘い=高recallの粗選別網)
+  temperature: 0.0
+  max_tokens: 1500
+
+grading:
+  runs: 2                # 1答案あたりの採点回数
+  concurrency: 4         # asyncio 並列数(4〜6推奨)
+
+render:
+  dpi: 150
+  max_pages: 8
+
+classroom:
+  course_id: "<コースID>"                # Classroom URLの c/ の後ろのID(またはBase64形式)
+  credentials_file: "credentials.json"
+  token_file: "token.json"
+
+paths:
+  data_dir: "data"
+
+# courseWorkId → 課題キー(rubric.ASSIGNMENT_SPECS のキー: rf/svm/adaboost/
+# kansou1/tokubetsu0511/sukina)。新しい課題は ./run.sh list で courseWorkId を確認して追加。
+assignments:
+  "<courseWorkId>": rf
+
+late_penalty: 1
+
+api:                     # 採点結果API(grader/api.py、localhost:8800)
+  token: null            # 設定すると X-API-Key ヘッダ必須になる(未設定=localhost前提で認証なし)
+
+pairwise:                # 審判フェーズ(refine)
+  model: "Qwen/Qwen3-VL-8B-Instruct-FP8"
+  judge_runs: 2
+  crit_prune: 2.0
+  anchor_student_id: "<基準答案(2点相当)のstudent_id>"   # 課題ごとに選び直す
+  anchor_max_pages: 4
+  candidate_max_pages: 6
