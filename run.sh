@@ -80,7 +80,8 @@ case "$cmd" in
     dc watch --coursework "$1" --interval "${2:-3600}" ;;
   run)
     [ $# -ge 1 ] || usage
-    dc run --coursework "$1" ;;
+    cw=$1; shift
+    dc run --coursework "$cw" "$@" ;;   # 追加引数(--lenient等)をそのまま渡す
   serve)
     [ $# -ge 1 ] || usage
     bash "$(dirname "$0")/scripts/vllm-server.sh" "$1" ;;

@@ -1,139 +1,275 @@
 # Google Classroom 提出レポート LLM採点システム
 
-Google Classroom の提出レポート(PDF/Googleドキュメント/Word)を、ローカルGPU上の
-VLM(vLLM + Qwen2.5-VL)でマルチモーダル採点する。0〜2点は自動確定、3点は
-「3点候補」としてTAに提示する半自動運用。**すべてDockerで実行し、ホスト環境を汚さない。**
+Google Classroom の提出レポート(PDF / Googleドキュメント / Word)を、ローカルGPU上の
+VLM(vLLM + Qwen-VL)でマルチモーダル採点する半自動システム。
+0〜2点は自動確定、3点は「候補」としてTAが目視確定する。**採点処理はすべてDockerで
+実行し、ホスト環境を汚さない**(GPUを使うのは vLLM コンテナのみ)。
 
-## 前提
+## 何をするか
 
-- ホスト側で vLLM を起動しておく(GPUを使うのはvLLMのみ。本ツールはCPUのみ):
+- 提出物を取得 → PDF化 → ページ画像化 → VLMで2回採点 → 集計
+- **2段階のハイブリッド採点**で「3点候補の見逃しゼロ」と「候補の絞り込み」を両立
+- 遅延・形式違反・未提出を自動仕分け、根拠(evidence)付きで出力
+- 成績の書き戻しは「採点API + ブラウザのユーザースクリプト」でログイン済みブラウザから入力
 
-```bash
-vllm serve Qwen/Qwen2.5-VL-32B-Instruct-AWQ \
-  --max-model-len 16384 \
-  --limit-mm-per-prompt image=8
+## アーキテクチャ
+
+```
+                 ┌── フェーズ1: 一次採点 (Qwen2.5-VL-7B) ── 甘め=見逃さない粗い網
+ 提出物 ─ fetch ─┤
+                 └── フェーズ2: 審判 (Qwen3-VL-8B) ── judge再採点 + ペアワイズ比較で候補を絞る
+                                                          │
+                                    report(集計CSV/サマリ)┤
+                                                          └─ 採点API → ブラウザで成績簿に下書き点入力
 ```
 
-- `config.yaml` の `vllm.base_url` は Docker 内から見える
-  `http://host.docker.internal:8000/v1` を設定済み
-- `classroom.course_id` に対象コースIDを設定する
+- **一次採点**は意図的に甘く、人間が3点にする答案を取りこぼさない(高recall)
+- **審判フェーズ**が判別力の高いモデルで 0/1/2 の確定点を高精度化し、3点候補を絞り込む
+- 詳しい検証根拠は `docs/calibration-policy.md`(ローカル、gitignore)
 
-## かんたん実行(run.sh)
+---
 
-```bash
-./run.sh test                          # ユニットテスト
-./run.sh list                          # 課題一覧(courseWorkId確認)
-./run.sh verify <courseWorkId>         # 過去課題で傾向検証(Classroomの確定成績と比較)
-./run.sh verify <courseWorkId> samples/past_scores.csv   # 正解CSV指定
-./run.sh calibrate                     # samples/ のPDFでキャリブレーション
-./run.sh watch <courseWorkId>          # 提出を1時間ごとに自動取得・採点
-./run.sh run <courseWorkId>            # 締切時の最終バッチ
-./run.sh report <courseWorkId>         # 集計CSV+サマリ
-```
+## セットアップ
 
-token.json が空のときは自動でOAuth認証モード(ポート公開)になり、
-表示されるURLをブラウザで開くだけで認証できる。
-
-過去課題での検証(`verify`)は、提出物を取得→2回採点→人間の確定成績
-(Classroomの assignedGrade、なければ `--truth` CSV: student_id/name/email +
-human_score 列)と突き合わせ、完全一致率・±1以内一致率・平均差(甘い/辛い)・
-不一致答案の一覧を表示する。CSVは `data/report/<cw>_verify.csv` に保存。
-truth CSV はコンテナから見える `samples/` か `data/` に置くこと。
-
-## 使い方(docker compose 直接)
+### 1. 取得と設定ファイル
 
 ```bash
-docker compose build
-
-# ユニットテスト
-docker compose run --rm test
-
-# 1) キャリブレーション(最初のマイルストーン)
-#    samples/ にPDFを置き、samples/truth.csv (filename,human_score) を用意
-docker compose run --rm grader calibrate --dir samples --truth samples/truth.csv
-docker compose run --rm grader calibrate --dir samples --truth samples/truth.csv \
-  --model Qwen/Qwen2.5-VL-7B-Instruct   # 7Bとの比較
-
-# 2) 提出期間中: watchモード(1時間ごとに Classroom から自動取得→render→grade、
-#    処理済みスキップ、再提出は自動再採点)。初回はOAuth認証のため --service-ports を付ける
-docker compose run --rm --service-ports grader watch --coursework <courseWorkId> --interval 3600
-
-# 3) 締切(講義開始)時: 最終バッチ
-docker compose run --rm grader run --coursework <courseWorkId>
-
-# 4) 講義中: サマリ+CSV
-docker compose run --rm grader report --coursework <courseWorkId>
+git clone git@github.com:kake256/class_room_app.git
+cd class_room_app
+cp config.example.yaml config.yaml     # 実値を記入(このファイルは gitignore)
 ```
 
-## Classroom API 認証(fetch/run/watch に必要)
+`config.yaml` の主な項目:
 
-1. Google Cloud Console で OAuth クライアント(デスクトップ)を作成し
+| 項目 | 説明 |
+|---|---|
+| `classroom.course_id` | 対象コースID(Classroom URLの `/c/` の後ろ。Base64形式でも可) |
+| `assignments` | courseWorkId → 課題キー の対応(下記) |
+| `vllm.model` | 一次採点モデル(既定 Qwen2.5-VL-7B) |
+| `pairwise.model` | 審判モデル(既定 Qwen3-VL-8B-FP8) |
+| `pairwise.anchor_student_id` | ペアワイズ比較の基準答案(2点相当)。**課題ごとに選び直す** |
+| `pairwise.crit_prune` | 審判の観点合計がこの値未満の候補を降格(既定2.0) |
+| `late_penalty` | 遅延減点(既定1) |
+| `api.token` | 設定すると採点APIが `X-API-Key` 必須になる |
+
+### 2. Classroom API 認証(初回1回のみ)
+
+1. Google Cloud Console で OAuth クライアント(デスクトップ)を作成し、
    `credentials.json` をプロジェクト直下に置く
-2. `touch token.json` してから run.sh で実行すると認証URLが表示される。
-   ブラウザで開いて許可すると `http://localhost:8765` にリダイレクトされ、
-   token.json に保存される(以後は自動更新)
-   (スコープ: coursework.students.readonly / rosters.readonly / drive.readonly)
+2. `touch token.json` してから `run.sh` の任意コマンドを実行すると認証URLが出る
+3. ブラウザで開いて許可 → `token.json` に保存(以後は自動更新)
 
-   **VSCode Remote-SSH の場合(推奨)**: ターミナルに出る認証URLを
-   Ctrl+クリックして手元のブラウザで許可するだけ。VSCodeがポート8765を
-   自動転送するためリダイレクトはそのまま届く(届かない場合はパネルの
-   「ポート」タブで 8765 を手動追加)
+スコープ: `classroom.coursework.students`(下書き点書き込みに必要) /
+`rosters.readonly` / `drive.readonly`
 
-   **素のSSHの場合**: 手元のPCでトンネルを張ってから認証URLを開く:
+**VSCode Remote-SSH の場合**: 出てきた認証URLを Ctrl+クリックで手元ブラウザで許可。
+VSCodeがポート8765を自動転送する(届かなければ「ポート」タブで8765を手動追加)。
 
-   ```bash
-   ssh -L 8765:localhost:8765 <user>@<リモートホスト>
-   ```
+**素のSSH の場合**: 手元PCで `ssh -L 8765:localhost:8765 <user>@<host>` してから認証URLを開く。
+`run.sh` が接続形態を検知して手順を表示する。
 
-   run.sh が接続形態を自動検知して該当する手順を表示する。
-   認証は初回の1回だけで、以後 watch/verify などは完全自動
-3. 成績の書き戻し: Classroom API は「課題を作成したプロジェクト」以外からの
-   書き込みを拒否する(UI作成課題は `ProjectPermissionDenied`)。このため
-   下記の「採点API + ブラウザ拡張」方式で、ログイン済みブラウザから下書き点を入力する
+### 3. 課題の登録
 
-## 採点API + 成績簿入力(下書き点の書き戻し)
+新しい課題を採点する前に、`./run.sh list` で courseWorkId を確認し、
+`config.yaml` の `assignments:` に「courseWorkId → 課題キー」を追加する:
 
-Classroom APIの書き込み制約を、ログイン済みの自分のブラウザ経由で回避する構成:
-
-```
-[GPUマシン] 採点API (localhost:8800)  ──JSON──►  [自分のブラウザ]
-   report結果をJSONで返す                    成績簿タブで動くユーザースクリプトが
-                                             APIから点数を取得して下書き点を入力
+```yaml
+assignments:
+  "<courseWorkId>": rf        # 例
 ```
 
-1. API起動: `docker compose up -d api`(localhostのみ公開)。ブラウザからの経路:
-   - 同一LAN/SSH: `-L 8800:localhost:8800`(VSCodeのポート転送でも可)→ `http://localhost:8800`
-   - VPN不可の外部NW(Tailscale): ホストに何も入れずDockerで完結:
-     ```bash
-     cp .env.example .env    # TS_AUTHKEY を記入(管理コンソールでMagicDNS+HTTPS証明書も有効化)
-     docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d tailscale api-ts
-     ```
-     → `https://classroom-grader.<tailnet>.ts.net`(HTTPS化でmixed-content回避、
-     Tailnet内=鍵認証のみ到達)。api-tsは結果配信専用(採点は ./run.sh 側で実施)
-   - `GET /grades/{courseWorkId}` … report結果をJSONで返す
-   - `POST /jobs {coursework_id, phase}` … 採点を非同期起動(run/refine/report/full)
-   - `GET /jobs/{id}` … 進捗。`config.yaml` の `api.token` で X-API-Key 必須にできる
-2. `browser/classroom-grader.user.js` を Tampermonkey 等に登録
-3. 対象課題の成績ページを開き、右下パネルで courseWorkId を入れて
-   「プレビュー」(色付けのみ)→確認→「入力実行」
-   - 下書き点(draftGrade)のみ入力。返却ボタンには触れない
-   - 既に点数があるセルはスキップ、入力後に読み戻し検証、失敗時は中断
-   - 成績簿DOMは変わりやすいので、動かない場合はスクリプト内 SELECTORS を調整
+課題キーと対応するルーブリック(`grader/rubric.py` の `ASSIGNMENT_SPECS`):
+
+| キー | 内容 | ルーブリック |
+|---|---|---|
+| `rf` / `svm` / `adaboost` | 実験レポート(パラメータ変更→識別境界/識別率) | EXPERIMENT(定量評価・実験方法・考察) |
+| `kansou1` / `tokubetsu0511` | 講義の感想・まとめ | KANSOU(まとめの具体性・理解・感想) |
+| `sukina` | 好きな手法とその理由 | EFFORT(取り組み量+概念理解の軽い確認) |
+
+新しい種類の課題は `ASSIGNMENT_SPECS` に課題文とルーブリック種別を1エントリ追加する。
+
+---
+
+## 採点の実行(フルフロー)
+
+vLLMサーバはモデルを切り替えて2フェーズで使う(すべてDockerでGPUを使うのはこれのみ):
+
+```bash
+# フェーズ1: 一次採点
+./run.sh serve q25-7b                   # 一次採点モデルのvLLMを起動
+./run.sh run <courseWorkId>             # fetch → render → 2回採点
+#   感想文寄りの課題を甘めに採点したいとき:
+docker compose run --rm grader run --coursework <courseWorkId> --lenient
+
+# フェーズ2: 審判(0/1/2の確定点向上 + 3点候補の絞り込み)
+./run.sh serve q3-8b                    # 審判モデルに切り替え
+./run.sh refine <courseWorkId>          # judge再採点 + ペアワイズ比較
+#   基準答案(anchor)をコマンドで指定する場合:
+./run.sh refine <courseWorkId> <anchor_student_id>
+
+# 集計
+./run.sh report <courseWorkId>          # サマリ表示 + data/report/<cw>.csv
+```
+
+`report` の出力 CSV / サマリ:
+
+- `category`: `auto_0`/`auto_1`/`auto_2`(自動確定)、`candidate_3`(3点候補、TA確認)、
+  `review`(要確認)、`not_submitted`(未提出)
+- `tier`: 候補内の格付け。`strong`(最有力、両順ペアワイズ勝ち)→ `borderline` の順で確認
+- `judge_score` / `evidence` / `flags` も出力
+
+### 採点姿勢の切り替え
+
+`--lenient`(甘め)/ `--strict`(厳しめ、既定)を `run`/`verify`/`grade`/`watch` に付けられる。
+甘めは「明らかな不足がなければ加点・迷ったら高い方」。EFFORT ルーブリック(`sukina`)は
+「ある程度書けていて概念をある程度理解していれば3点」を内蔵(lenient不要)。
+
+### 提出期間中の自動採点(任意)
+
+```bash
+./run.sh serve q25-7b
+./run.sh watch <courseWorkId> 3600      # 1時間ごとに取得→採点(処理済みskip、再提出は自動再採点)
+```
+
+---
+
+## 成績の書き戻し(下書き点の入力)
+
+Classroom API は「課題を作成したプロジェクト」以外からの成績書き込みを拒否する
+(教師がUIで作成した課題は `ProjectPermissionDenied`)。そこで **2通り**用意している。
+
+### 方式A: 採点API + ブラウザのユーザースクリプト(UI作成課題でも可・推奨)
+
+ログイン済みの自分のブラウザ経由で入力するため、API制約も認証も回避できる。
+
+```
+[GPUマシン] 採点API  ──JSON(GET /grades)──►  [自分のブラウザ]
+   report結果を配信                       成績簿タブのユーザースクリプトが
+                                          点数を取得して下書き点を入力
+```
+
+**1) 採点API を起動**
+
+```bash
+./run.sh api-up                          # localhost:8800 で起動
+```
+
+エンドポイント:
+- `GET /grades/{courseWorkId}` … report結果をJSONで返す
+- `GET /health` … 稼働確認
+- `POST /jobs {coursework_id, phase}` / `GET /jobs/{id}` … 採点の非同期起動・進捗
+  (phase: run/refine/report/full)
+
+**2) ブラウザからAPIへ届く経路を用意**(いずれか)
+
+| 経路 | 手順 | API欄に入れるURL |
+|---|---|---|
+| 同一LAN / SSH転送 | `ssh -L 8800:localhost:8800 …`(VSCodeのポート転送でも可) | `http://localhost:8800` |
+| VPN不可の外部NW(Tailscale) | 下記 | `https://classroom-grader.<tailnet>.ts.net` |
+
+Tailscale(ホストに何も入れずDockerで完結):
+
+```bash
+cp .env.example .env                     # TS_AUTHKEY を記入
+# Tailscale管理コンソールで MagicDNS + HTTPS証明書 を有効化
+docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d tailscale api-ts
+docker compose -f docker-compose.yml -f docker-compose.tailscale.yml exec tailscale tailscale serve status  # 公開URL確認
+```
+
+- `api-ts` は Tailscale の netns を共有し `tailscale serve` でHTTPS公開。**結果配信専用**
+  (netns共有のためホストのvLLMに届かず `POST /jobs` は不可。採点は `./run.sh` 側で実施)
+- Tailscaleコンテナを再起動したら `api-ts` も再起動すること
+- Tailnet内=鍵認証のデバイスからのみ到達。HTTPS化で mixed-content を回避
+
+**3) ユーザースクリプトを登録して実行**
+
+1. Tampermonkey 等に `browser/classroom-grader.user.js` を登録
+2. 対象課題の成績ページ(生徒×課題の一覧)を開く
+3. 右下パネルで **API接続先**(上表のURL)・**courseWorkId** を入力
+   (API接続先・token はブラウザに保存される)
+4. **「プレビュー」** … 入力予定を青・既存点をグレーで色付け(**入力しない**)
+5. 内容を確認して **「入力実行」** … 下書き点(draftGrade)のみ入力
+
+安全設計: 下書き点のみ・**返却ボタンには触れない**・既存点はスキップ・入力後に
+読み戻し検証・失敗で中断。`auto_*` と `candidate_3` が対象、`review` は入力しない。
+
+> 成績簿のHTML構造は変わりやすい。動かない場合はスクリプト冒頭の `SELECTORS`
+> (生徒行・氏名・点数入力欄)を実際のDOMに合わせて調整する。
+
+### 方式B: push-grades(API作成課題のみ)
+
+課題をこのツール/API経由で作成した場合は、直接書き込める:
+
+```bash
+./run.sh push-grades-dry <courseWorkId>              # 対象確認(dry-run)
+./run.sh push-grades <courseWorkId>                  # auto_0/1/2 の下書き点を書き込み
+docker compose run --rm grader push-grades --coursework <cw> --include-candidates  # 3点候補にも基準値
+```
+
+- 下書き点(draftGrade)のみ・既存点はスキップ・返却はしない
+- 100点満点課題は 0→70 / 1→75 / 2→80 / 3→85 に自動変換(`push.SCORE_MAP_100`)
+
+---
+
+## 過去課題での傾向検証(verify)
+
+人間の確定成績と採点結果を突き合わせて、一致率・甘辛傾向を確認する:
+
+```bash
+./run.sh verify <courseWorkId>                       # Classroomの確定成績(assignedGrade)と比較
+./run.sh verify <courseWorkId> samples/past.csv      # 正解CSV(student_id/name/email + human_score)
+```
+
+完全一致率・±1以内一致率・平均差(甘い/辛い)・不一致答案一覧を表示し、
+`data/report/<cw>_verify.csv` に保存する。truth CSV はコンテナから見える
+`samples/` か `data/` に置く。
+
+---
 
 ## 採点ポリシー(要点)
 
-- 1答案につき独立2回採点。一致→採用、不一致→低い方+`inconsistent`でレビュー行き
-- 0/1/2点は自動確定(警告フラグがあればレビュー行き)、3点は `candidate_3` としてTAが目視確定
+- 1答案につき独立2回採点。一致→採用、不一致→低い方 + `inconsistent` でレビュー行き
+- 0/1/2点は自動確定(警告フラグがあればレビュー行き)、3点は自動確定せず候補提示
+- 審判フェーズ: judge が 0/1/2 を高精度化、ペアワイズで候補を降格(両順負け/tieのみ)、
+  judge観点合計が閾値未満の候補も降格。人間3点の見逃しゼロを維持
 - `late` は report 側で −1(3点満点は減点保留 `late_waiver_candidate`)
 - 再提出は Drive の modifiedTime / PDFハッシュで検知して自動再採点
-- ローカル運用のため匿名化はしない。名簿APIから実名を取得し、
-  CSV・サマリに氏名を表示する(`data/` は共有・コミット禁止)
+- ローカル運用のため匿名化しない。名簿APIから実名を取得しCSV・サマリに表示する
+
+---
+
+## コマンド一覧(run.sh)
+
+```
+./run.sh test                             ユニットテスト
+./run.sh list                             課題一覧(courseWorkId確認)
+./run.sh serve {q25-7b|q3-8b|stop|status} vLLMサーバのモデル切り替え
+./run.sh run <cw> [--lenient]             一次採点(fetch→render→grade)
+./run.sh refine <cw> [anchorId]           審判フェーズ(judge再採点+ペアワイズ)
+./run.sh report <cw>                       集計CSV+サマリ
+./run.sh verify <cw> [truth.csv]          過去課題で人間の成績と傾向比較
+./run.sh calibrate [dir] [truth.csv]      ローカルPDFでキャリブレーション
+./run.sh watch <cw> [間隔秒]               提出を定期取得して自動採点
+./run.sh push-grades-dry <cw>             下書き点書き込みの対象確認
+./run.sh push-grades <cw>                 下書き点を書き込み(API作成課題のみ)
+./run.sh api-up / api-down                採点API(localhost:8800)の起動/停止
+./run.sh build                            Dockerイメージのビルド
+```
+
+---
 
 ## ディレクトリ
 
 ```
+grader/            採点ロジック(fetch/render/grade/pairwise/report/push/api …)
+browser/           成績簿入力ユーザースクリプト
+scripts/           vllm-server.sh(モデルプロファイル切り替え)
+tests/             ユニットテスト
+config.example.yaml 設定テンプレート(実値の config.yaml は gitignore)
+docker-compose.tailscale.yml  Tailscale経由でAPIをHTTPS公開するオーバーレイ
 data/
-  raw/ pdf/ pages/ results/ meta/ report/ calibration/
+  raw/ pdf/ pages/ results/ meta/ report/ calibration/   各段階の中間成果物(冪等・部分再実行可)
 ```
 
-各段階の中間成果物を保存し、部分再実行できる(冪等)。
+`data/`・`config.yaml`・`credentials.json`・`token.json`・`.env`・学生氏名を含む
+CSVやドキュメントは **gitignore 済み**(個人情報をリポジトリに含めない)。
