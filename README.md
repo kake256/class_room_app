@@ -101,8 +101,10 @@ Classroom APIの書き込み制約を、ログイン済みの自分のブラウ�
                                              APIから点数を取得して下書き点を入力
 ```
 
-1. API起動: `docker compose up -d api`(localhostのみ公開。SSH時は
-   `-L 8800:localhost:8800` で手元PCへ転送)
+1. API起動: `docker compose up -d api`(localhostのみ公開)。ブラウザからの経路:
+   - 同一LAN/SSH: `-L 8800:localhost:8800`(VSCodeのポート転送でも可)→ `http://localhost:8800`
+   - VPN不可の外部NW: Tailscale導入後 `tailscale serve --bg 8800`
+     → `https://<host>.<tailnet>.ts.net`(HTTPS化でmixed-content回避、Tailnet内のみ到達)
    - `GET /grades/{courseWorkId}` … report結果をJSONで返す
    - `POST /jobs {coursework_id, phase}` … 採点を非同期起動(run/refine/report/full)
    - `GET /jobs/{id}` … 進捗。`config.yaml` の `api.token` で X-API-Key 必須にできる

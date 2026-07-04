@@ -9,11 +9,15 @@
 
 /*
  * 使い方:
- *   1. GPUマシンで採点API を起動: docker compose up -d api
- *      (SSHごしなら手元PCへ -L 8800:localhost:8800 でポート転送)
- *   2. Tampermonkey等でこのスクリプトを登録
- *   3. 対象課題の「成績」ページ(生徒×課題の一覧)を開く
- *   4. 右下のパネルで courseWorkId を入れて「プレビュー」→内容確認→「入力実行」
+ *   1. GPUマシンで採点API を起動: docker compose up -d api (= ./run.sh api-up)
+ *   2. ブラウザからAPIへ届く経路を用意(いずれか):
+ *        a. 同一LAN/SSH転送: 手元PCへ -L 8800:localhost:8800(またはVSCodeのポート転送)
+ *           → API欄は http://localhost:8800
+ *        b. Tailscale(VPN不可の外部NW向け): GPUマシンで tailscale serve --bg 8800
+ *           → API欄は https://<host>.<tailnet>.ts.net(HTTPSなのでmixed-content回避)
+ *   3. Tampermonkey等でこのスクリプトを登録
+ *   4. 対象課題の「成績」ページ(生徒×課題の一覧)を開く
+ *   5. 右下パネルで API接続先 と courseWorkId を入れて「プレビュー」→確認→「入力実行」
  *
  * 安全設計:
  *   - 下書き点(draftGrade)の入力欄のみ操作。「返却」ボタンには一切触れない
@@ -28,7 +32,13 @@
 (function () {
   "use strict";
 
-  const API_BASE = "http://localhost:8800";
+  // 接続先はパネルで設定しブラウザに保存(個人のTailnet名をコードに直書きしない)。
+  //   ローカル/SSH転送: http://localhost:8800
+  //   Tailscale(tailscale serve): https://<host>.<tailnet>.ts.net
+  const DEFAULT_API_BASE = "http://localhost:8800";
+  const apiBase = () => localStorage.getItem("cga_api_base") || DEFAULT_API_BASE;
+  // 任意: config.yaml の api.token を設定した場合はここに同じ値を保存して使う
+  const apiToken = () => localStorage.getItem("cga_api_token") || "";
 
   // ---- ページDOMに依存する部分(壊れたらここを調整) ----
   const SELECTORS = {
@@ -50,7 +60,8 @@
 
   // ---- API取得 ----
   async function fetchGrades(cw) {
-    const res = await fetch(`${API_BASE}/grades/${cw}`);
+    const headers = apiToken() ? { "X-API-Key": apiToken() } : {};
+    const res = await fetch(`${apiBase()}/grades/${cw}`, { headers });
     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
     return (await res.json()).grades;
   }
@@ -146,14 +157,27 @@
       "background:#fff;border:1px solid #ccc;border-radius:8px;padding:10px;" +
       "font:12px sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.2);width:280px";
     p.innerHTML =
-      '<b>Classroom Grader</b><br>' +
-      'courseWorkId: <input id="cga-cw" style="width:150px">' +
+      '<b>Classroom Grader</b>' +
+      '<div style="margin-top:4px">API: <input id="cga-api" style="width:210px" ' +
+      'placeholder="http://localhost:8800 か https://…ts.net"></div>' +
+      '<div style="margin-top:2px">token: <input id="cga-token" style="width:200px" ' +
+      'placeholder="任意(api.token設定時)"></div>' +
+      '<div style="margin-top:4px">courseWorkId: <input id="cga-cw" style="width:150px"></div>' +
       '<div style="margin-top:6px">' +
       '<button id="cga-preview">プレビュー</button> ' +
       '<button id="cga-run" style="color:#b00">入力実行</button></div>' +
       '<pre id="cga-log" style="max-height:140px;overflow:auto;margin:6px 0 0;' +
       'white-space:pre-wrap;color:#333"></pre>';
     document.body.appendChild(p);
+
+    // 接続先・トークンは localStorage に保存(入力のたびに保持)
+    const apiInput = document.getElementById("cga-api");
+    const tokenInput = document.getElementById("cga-token");
+    apiInput.value = apiBase();
+    tokenInput.value = apiToken();
+    apiInput.onchange = () => localStorage.setItem("cga_api_base", apiInput.value.trim());
+    tokenInput.onchange = () => localStorage.setItem("cga_api_token", tokenInput.value.trim());
+
     const cw = () => document.getElementById("cga-cw").value.trim();
     document.getElementById("cga-preview").onclick = () =>
       run(cw(), { preview: true }).catch((e) => log("ERROR: " + e.message));
