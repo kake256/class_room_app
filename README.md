@@ -103,8 +103,13 @@ Classroom APIの書き込み制約を、ログイン済みの自分のブラウ�
 
 1. API起動: `docker compose up -d api`(localhostのみ公開)。ブラウザからの経路:
    - 同一LAN/SSH: `-L 8800:localhost:8800`(VSCodeのポート転送でも可)→ `http://localhost:8800`
-   - VPN不可の外部NW: Tailscale導入後 `tailscale serve --bg 8800`
-     → `https://<host>.<tailnet>.ts.net`(HTTPS化でmixed-content回避、Tailnet内のみ到達)
+   - VPN不可の外部NW(Tailscale): ホストに何も入れずDockerで完結:
+     ```bash
+     cp .env.example .env    # TS_AUTHKEY を記入(管理コンソールでMagicDNS+HTTPS証明書も有効化)
+     docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d tailscale api-ts
+     ```
+     → `https://classroom-grader.<tailnet>.ts.net`(HTTPS化でmixed-content回避、
+     Tailnet内=鍵認証のみ到達)。api-tsは結果配信専用(採点は ./run.sh 側で実施)
    - `GET /grades/{courseWorkId}` … report結果をJSONで返す
    - `POST /jobs {coursework_id, phase}` … 採点を非同期起動(run/refine/report/full)
    - `GET /jobs/{id}` … 進捗。`config.yaml` の `api.token` で X-API-Key 必須にできる

@@ -1,0 +1,45 @@
+# Tailscale経由でAPIを外部NWからHTTPS公開するオーバーレイ(ホストに何も入れない)。
+#
+# 使い方:
+#   1. Tailscale管理コンソールで MagicDNS と HTTPS証明書 を有効化
+#   2. 認証キー(Settings→Keys、reusable推奨)を .env に TS_AUTHKEY=... で置く
+#   3. docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d tailscale api-ts
+#   4. 公開URL: https://classroom-grader.<tailnet>.ts.net
+#      (ユーザースクリプトのAPI欄にこのURLを入れる)
+#
+# 注意:
+#  - api-ts は tailscale のネットワーク名前空間を共有するためホストのvLLMには
+#    到達できない(= POST /jobs の採点起動は不可)。採点は通常どおり
+#    ./run.sh run/refine/report で行い、api-ts は結果配信(GET /grades)専用。
+#  - netns共有のため tailscale コンテナを再起動したら api-ts も再起動すること:
+#      docker compose -f ... -f docker-compose.tailscale.yml restart api-ts
+#    (正規のTS_AUTHKEY+状態ボリュームなら tailscale は認証後に安定し再起動不要)
+#  - 疎通確認: docker compose ... exec tailscale wget -qO- http://127.0.0.1:8800/health
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    hostname: classroom-grader          # → classroom-grader.<tailnet>.ts.net
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:?TS_AUTHKEY を .env に設定してください}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "true"              # 特権(NET_ADMIN/TUN)不要
+      TS_SERVE_CONFIG: /config/serve.json
+    volumes:
+      - ./data/tailscale:/var/lib/tailscale   # ノード鍵の永続化(再起動で再認証不要)
+      - ./tailscale/serve.json:/config/serve.json:ro
+    restart: unless-stopped
+
+  api-ts:
+    build: .
+    user: "1002:1002"
+    environment:
+      HOME: /tmp
+    entrypoint: ["uvicorn", "grader.api:app", "--host", "127.0.0.1", "--port", "8800"]
+    network_mode: "service:tailscale"   # tailscale serve から 127.0.0.1:8800 で到達
+    depends_on: [tailscale]
+    volumes:
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
+      - ./credentials.json:/app/credentials.json:ro
+      - ./token.json:/app/token.json
+    restart: unless-stopped

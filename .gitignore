@@ -28,3 +28,6 @@ dfout.txt
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Tailscale認証キー等の環境変数
+.env
