@@ -136,78 +136,15 @@ docker compose run --rm grader run --coursework <courseWorkId> --lenient
 ## 成績の書き戻し(下書き点の入力)
 
 Classroom API は「課題を作成したプロジェクト」以外からの成績書き込みを拒否する
-(教師がUIで作成した課題は `ProjectPermissionDenied`)。そこで **2通り**用意している。
+(UI作成課題は `ProjectPermissionDenied`)。そのため書き戻しは **2通り**:
 
-### 方式A: 採点API + ブラウザのユーザースクリプト(UI作成課題でも可・推奨)
+- **方式A**: 採点API + ブラウザのユーザースクリプト … UI作成課題でも可(推奨)。
+  `./run.sh api-up` でAPIを起動し、`browser/classroom-grader.user.js` から下書き点を入力。
+  外部NWからは SSH転送 または Tailscale(HTTPS公開)で到達
+- **方式B**: `./run.sh push-grades <cw>` … このツール/API経由で作成した課題のみ直接書き込み
 
-ログイン済みの自分のブラウザ経由で入力するため、API制約も認証も回避できる。
-
-```
-[GPUマシン] 採点API  ──JSON(GET /grades)──►  [自分のブラウザ]
-   report結果を配信                       成績簿タブのユーザースクリプトが
-                                          点数を取得して下書き点を入力
-```
-
-**1) 採点API を起動**
-
-```bash
-./run.sh api-up                          # localhost:8800 で起動
-```
-
-エンドポイント:
-- `GET /grades/{courseWorkId}` … report結果をJSONで返す
-- `GET /health` … 稼働確認
-- `POST /jobs {coursework_id, phase}` / `GET /jobs/{id}` … 採点の非同期起動・進捗
-  (phase: run/refine/report/full)
-
-**2) ブラウザからAPIへ届く経路を用意**(いずれか)
-
-| 経路 | 手順 | API欄に入れるURL |
-|---|---|---|
-| 同一LAN / SSH転送 | `ssh -L 8800:localhost:8800 …`(VSCodeのポート転送でも可) | `http://localhost:8800` |
-| VPN不可の外部NW(Tailscale) | 下記 | `https://classroom-grader.<tailnet>.ts.net` |
-
-Tailscale(ホストに何も入れずDockerで完結):
-
-```bash
-cp .env.example .env                     # TS_AUTHKEY を記入
-# Tailscale管理コンソールで MagicDNS + HTTPS証明書 を有効化
-docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d tailscale api-ts
-docker compose -f docker-compose.yml -f docker-compose.tailscale.yml exec tailscale tailscale serve status  # 公開URL確認
-```
-
-- `api-ts` は Tailscale の netns を共有し `tailscale serve` でHTTPS公開。**結果配信専用**
-  (netns共有のためホストのvLLMに届かず `POST /jobs` は不可。採点は `./run.sh` 側で実施)
-- Tailscaleコンテナを再起動したら `api-ts` も再起動すること
-- Tailnet内=鍵認証のデバイスからのみ到達。HTTPS化で mixed-content を回避
-
-**3) ユーザースクリプトを登録して実行**
-
-1. Tampermonkey 等に `browser/classroom-grader.user.js` を登録
-2. 対象課題の成績ページ(生徒×課題の一覧)を開く
-3. 右下パネルで **API接続先**(上表のURL)・**courseWorkId** を入力
-   (API接続先・token はブラウザに保存される)
-4. **「プレビュー」** … 入力予定を青・既存点をグレーで色付け(**入力しない**)
-5. 内容を確認して **「入力実行」** … 下書き点(draftGrade)のみ入力
-
-安全設計: 下書き点のみ・**返却ボタンには触れない**・既存点はスキップ・入力後に
-読み戻し検証・失敗で中断。`auto_*` と `candidate_3` が対象、`review` は入力しない。
-
-> 成績簿のHTML構造は変わりやすい。動かない場合はスクリプト冒頭の `SELECTORS`
-> (生徒行・氏名・点数入力欄)を実際のDOMに合わせて調整する。
-
-### 方式B: push-grades(API作成課題のみ)
-
-課題をこのツール/API経由で作成した場合は、直接書き込める:
-
-```bash
-./run.sh push-grades-dry <courseWorkId>              # 対象確認(dry-run)
-./run.sh push-grades <courseWorkId>                  # auto_0/1/2 の下書き点を書き込み
-docker compose run --rm grader push-grades --coursework <cw> --include-candidates  # 3点候補にも基準値
-```
-
-- 下書き点(draftGrade)のみ・既存点はスキップ・返却はしない
-- 100点満点課題は 0→70 / 1→75 / 2→80 / 3→85 に自動変換(`push.SCORE_MAP_100`)
+サーバー構成・アクセス経路(localhost/SSH/Tailscale)・ユーザースクリプトの詳細手順は
+**[docs/grade-writeback.md](docs/grade-writeback.md)** を参照。
 
 ---
 
