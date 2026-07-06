@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Classroom Grader (下書き点入力)
 // @namespace    classroom-grading-automation
-// @version      1.7
+// @version      1.8
 // @description  採点APIから点数を取得し、Classroom成績簿に下書き点を入力する
 // @match        https://classroom.google.com/*
 // @updateURL    https://raw.githubusercontent.com/kake256/class_room_app/main/browser/classroom-grader.user.js
@@ -120,34 +120,49 @@
       if (c === "review" && includeReview) return true;
       return false;
     });
-    // 現在表示中の未採点ボタンを集める(表示中の行のみDOMに存在=仮想スクロール)
-    const map = collectAddButtons();
-    log(`未採点欄(表示中): ${map.size}件 / API対象: ${targets.length}件` +
+    // 残り: normName -> {score, name}
+    const remaining = new Map();
+    targets.forEach((g) => remaining.set(normName(g.name),
+      { score: g.score_after_late ?? g.content_score, name: g.name }));
+    log(`API対象: ${remaining.size}件` +
         (inc.length ? `(低い点+${inc.join("+")})` : "(低い点のみ)"));
 
-    let done = 0, miss = 0, skip = 0, fail = 0;
-    for (const g of targets) {
-      const key = normName(g.name);
-      const btn = map.get(key);              // 完全一致のみ(部分一致は誤爆源なので不使用)
-      if (!btn) { miss++; continue; }        // 既採点(返却済み)or 画面外
-      const score = g.score_after_late ?? g.content_score;
-      if (preview) {
-        btn.style.outline = "2px solid #4a90d9";
-        btn.title = `→ ${score}点`;
-        done++;
-        continue;
+    // 表示中の生徒だけ処理 → 最後の未採点ボタンを表示領域に入れて次の行を描画 → 繰り返す
+    // (APIの順で離れた生徒に飛ばず、見えている行から順に処理して仮想スクロールに対応)
+    let done = 0, skip = 0, fail = 0, stagnant = 0, lastSig = "";
+    for (let pass = 0; pass < 80 && remaining.size > 0 && !fail && stagnant < 3; pass++) {
+      let processed = 0;
+      for (const [name, btn] of collectAddButtons()) {
+        if (!remaining.has(name)) continue;   // 対象外(review未選択/採点済み)は触らない
+        const t = remaining.get(name);
+        if (preview) {
+          btn.style.outline = "2px solid #4a90d9";
+          btn.title = `→ ${t.score}点`;
+          remaining.delete(name); done++; processed++;
+        } else {
+          const res = await setGrade(btn, t.score, name);
+          if (res === "skip") { btn.style.outline = "2px solid #999"; skip++; }
+          else if (res) { btn.style.outline = "2px solid #4caf50"; done++; }
+          else { btn.style.outline = "2px solid #e53935"; fail++;
+                 log(`!! 確定できず: ${t.name}。中断(既入力分は保持)`); break; }
+          remaining.delete(name); processed++;
+        }
       }
-      const res = await setGrade(btn, score, key);
-      if (res === "skip") { btn.style.outline = "2px solid #999"; skip++; }
-      else if (res) { btn.style.outline = "2px solid #4caf50"; done++; }
-      else { btn.style.outline = "2px solid #e53935"; fail++;
-             log(`!! 確定できず: ${g.name}。中断(既入力分は保持)`); break; }
-      await sleep(200);
+      if (fail) break;
+      // 最後の未採点ボタンを表示領域に入れて、その先の行を描画させる(容器を選ばない確実な方法)
+      const btns = document.querySelectorAll(SEL.addButton);
+      const sig = btns.length + "|" +
+        (btns.length ? btns[btns.length - 1].getAttribute("aria-label") : "");
+      if (btns.length) btns[btns.length - 1].scrollIntoView({ block: "center" });
+      await sleep(500);
+      // 新しい行も出ず処理もしないパスが続いたら終了
+      if (processed === 0 && sig === lastSig) stagnant++; else stagnant = 0;
+      lastSig = sig;
     }
-    log(`${preview ? "プレビュー" : "入力"}完了: 対象${targets.length} / ` +
-        `${preview ? "予定" : "確定"}${done} / スキップ(既存)${skip} / 未照合${miss} / 失敗${fail}`);
-    if (miss > 0)
-      log("※未照合=既採点(返却済み)or 画面外。画面外はリストを下までスクロールして再実行(冪等)。");
+    log(`${preview ? "プレビュー" : "入力"}完了: ${preview ? "予定" : "確定"}${done}` +
+        `${skip ? " / スキップ(既存)" + skip : ""} / 未照合${remaining.size} / 失敗${fail}`);
+    if (remaining.size > 0)
+      log("※未照合=既採点(返却済み)。これが残るのは正常(全員採点済み)。");
   }
 
   function log(msg) {
