@@ -105,18 +105,21 @@
     return !stillAdd;
   }
 
-  async function run(cw, { preview, includeCandidates }) {
+  async function run(cw, { preview, includeCandidates, includeReview }) {
     const grades = await fetchGrades(cw);
     const map = collectAddButtons();
+    const inc = [];
+    if (includeCandidates) inc.push("3点候補");
+    if (includeReview) inc.push("review");
     log(`未採点の点数欄: ${map.size}件 / API: ${grades.length}件` +
-        (includeCandidates ? "(3点候補も入力)" : "(3点候補は保留)"));
+        (inc.length ? `(${inc.join("+")}も入力)` : "(低い点のみ)"));
 
-    // 既定: auto_*(低い点 0/1/2)のみ入力。candidate_3(3点)は保留=TAが確認。
-    // review は人間判断待ちなので入れない。チェック時のみ candidate_3 も入力。
+    // 既定: auto_*(低い点 0/1/2)のみ入力。チェック時のみ candidate_3 / review も含める。
     const targets = grades.filter((g) => {
       const c = String(g.category);
       if (c.startsWith("auto_")) return true;
       if (c === "candidate_3" && includeCandidates) return true;
+      if (c === "review" && includeReview) return true;
       return false;
     });
 
@@ -187,15 +190,20 @@
     const tokenInput = field(p, "token:", "cga-token", "200px", "api.tokenと同じ値");
     const cwInput = field(p, "courseWorkId:", "cga-cw", "150px", "");
 
-    // 3点候補も入力するかのチェックbox(既定OFF=保留)
-    const optRow = document.createElement("label");
-    optRow.style.cssText = "display:block;margin-top:6px";
-    const cand = document.createElement("input");
-    cand.type = "checkbox";
-    cand.id = "cga-cand";
-    optRow.appendChild(cand);
-    optRow.appendChild(document.createTextNode(" 3点候補も入力する(既定は保留)"));
-    p.appendChild(optRow);
+    // 入力対象を広げるチェックbox(既定OFF=低い点のみ)
+    function checkbox(labelText, id) {
+      const row = document.createElement("label");
+      row.style.cssText = "display:block;margin-top:6px";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.id = id;
+      row.appendChild(box);
+      row.appendChild(document.createTextNode(" " + labelText));
+      p.appendChild(row);
+      return box;
+    }
+    const cand = checkbox("3点候補も入力する(既定は保留)", "cga-cand");
+    const rev = checkbox("review(要確認)も入力する", "cga-rev");
 
     const btnRow = document.createElement("div");
     btnRow.style.marginTop = "6px";
@@ -223,13 +231,18 @@
     tokenInput.onchange = () => localStorage.setItem("cga_api_token", tokenInput.value.trim());
 
     const cw = () => cwInput.value.trim();
-    const opts = (preview) => ({ preview, includeCandidates: cand.checked });
+    const opts = (preview) => ({
+      preview, includeCandidates: cand.checked, includeReview: rev.checked,
+    });
     previewBtn.onclick = () =>
       run(cw(), opts(true)).catch((e) => log("ERROR: " + e.message));
     runBtn.onclick = () => {
-      const msg = cand.checked
-        ? "未採点の下書き点(3点候補含む)を入力します。続行しますか?"
-        : "未採点のうち低い点(0/1/2)のみ入力します(3点候補は保留)。続行しますか?";
+      const extra = [];
+      if (cand.checked) extra.push("3点候補");
+      if (rev.checked) extra.push("review");
+      const msg = extra.length
+        ? `未採点の下書き点(低い点 + ${extra.join("+")})を入力します。続行しますか?`
+        : "未採点のうち低い点(0/1/2)のみ入力します(3点候補・reviewは保留)。続行しますか?";
       if (confirm(msg))
         run(cw(), opts(false)).catch((e) => log("ERROR: " + e.message));
     };
