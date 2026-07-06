@@ -12,6 +12,7 @@ config.yaml
 
 # 内部作業ドキュメント(検証中に学生氏名・IDを含む)
 docs/calibration-policy.md
+docs/handoff-memo.md
 
 # 学生の個人情報を含むCSV(氏名・メール・成績)
 *.csv
