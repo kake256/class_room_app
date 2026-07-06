@@ -43,10 +43,11 @@ Classroom API は「課題を作成したプロジェクト」以外からの成
 
 ### 2) ブラウザからAPIへ届く経路を用意(いずれか)
 
-| 経路 | 手順 | ユーザースクリプトのAPI欄 |
-|---|---|---|
-| 同一LAN / SSH転送 | `ssh -L 8800:localhost:8800 …`(VSCodeのポート転送でも可) | `http://localhost:8800` |
-| VPN不可の外部NW(Tailscale) | 下記 | `https://classroom-grader.<tailnet>.ts.net` |
+| 経路 | 手順 | ユーザースクリプトのAPI欄 | 手元PCへの導入 |
+|---|---|---|---|
+| 同一LAN / SSH転送 | `ssh -L 8800:localhost:8800 …`(VSCodeのポート転送でも可) | `http://localhost:8800` | 不要 |
+| 外部NW(Cloudflare Tunnel) | 下記(推奨) | `https://<ランダム>.trycloudflare.com` | **不要** |
+| 外部NW(Tailscale) | 後述 | `https://classroom-grader.<tailnet>.ts.net` | 要Tailscaleクライアント |
 
 > **なぜHTTPSが要るか**: Classroom成績簿は https ページ。そこから `http://<IP>:8800` を
 > 直接叩くとブラウザに mixed-content でブロックされる。`http://localhost` だけは例外的に
@@ -58,7 +59,34 @@ Classroom API は「課題を作成したプロジェクト」以外からの成
 - **素のSSH**: 手元PCで `ssh -L 8800:localhost:8800 <user>@<host>`
 - 確認: 手元ブラウザで `http://localhost:8800/health` が `{"status":"ok"}` を返せばOK
 
-#### Tailscale(ホストに何も入れずDockerで完結)
+#### Cloudflare Tunnel(手元PCに何も入れない・推奨)
+
+公開HTTPS URLを発行する方式。手元PCにクライアント導入が不要で、ブラウザでURLを開くだけ。
+既定は **Quick Tunnel**(Cloudflareアカウント・ドメイン不要)。
+
+**公開URLは誰でも到達しうるため、必ずAPIトークンで保護する**:
+
+```bash
+# 1) config.yaml の api.token に十分長いランダム文字列を設定
+openssl rand -hex 24                      # 生成例。出力を config.yaml の api.token: に貼る
+
+# 2) api + cloudflared を起動
+docker compose -f docker-compose.yml -f docker-compose.cloudflare.yml up -d api cloudflared
+
+# 3) 発行された公開URLを確認
+docker compose -f docker-compose.yml -f docker-compose.cloudflare.yml logs cloudflared | grep trycloudflare
+#   → https://<ランダム語>.trycloudflare.com
+```
+
+ユーザースクリプトのパネルで **API=その公開URL**、**token=`api.token`と同じ値** を入力する。
+
+- HTTPSなので mixed-content にならない。CORSは `classroom.google.com` のみ許可
+- `X-API-Key` トークンで保護(トークン無しのアクセスは401)
+- **Quick TunnelのURLは起動ごとに変わる**。安定URL + Googleログイン認証にしたい場合は
+  Cloudflareにドメインを追加し、Zero Trustで名前付きトンネル+Accessを構成する
+  (`docker-compose.cloudflare.yml` のコメント参照)。
+
+#### Tailscale(要クライアント導入)
 
 VPNを張れない外部ネットワークから使う場合。WireGuardベースの私設ネットワークで、
 `tailscale serve` によりAPIを **Tailnet内のみ・HTTPSで** 公開する。

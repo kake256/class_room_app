@@ -1,0 +1,26 @@
+# Cloudflare Tunnel でAPIを外部NWからHTTPS公開するオーバーレイ(手元PCに何も入れない)。
+#
+# 既定は Quick Tunnel: Cloudflareアカウントもドメインも不要で、起動すると
+#   https://<ランダム>.trycloudflare.com のHTTPS URLが発行される。
+#   ※URLは起動ごとに変わる。※誰でも到達しうる公開URLなので、
+#     必ず config.yaml の api.token を設定して X-API-Key 認証を有効にすること。
+#
+# 使い方:
+#   1. config.yaml の api.token に十分長いランダム文字列を設定(例: openssl rand -hex 24)
+#   2. docker compose -f docker-compose.yml -f docker-compose.cloudflare.yml up -d api cloudflared
+#   3. 発行URLを確認:
+#      docker compose -f docker-compose.yml -f docker-compose.cloudflare.yml logs cloudflared | grep trycloudflare
+#   4. ユーザースクリプトのパネルで API=そのURL、token=api.tokenと同じ値 を入力
+#
+# 【安定URL + Googleログイン認証にしたい場合(名前付きトンネル+Access)】
+#   Cloudflareにドメインを追加し、Zero Trustダッシュボードで Tunnel を作成 → トークン取得 →
+#   .env に TUNNEL_TOKEN=... を置き、下の command を次に差し替える:
+#     command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+#   ダッシュボードで Public hostname を http://api:8800 に向け、Access ポリシーで
+#   自分のGoogleアカウント(chubu.ac.jp)のみ許可する。
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate --url http://api:8800
+    depends_on: [api]
+    restart: unless-stopped
