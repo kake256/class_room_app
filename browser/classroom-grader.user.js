@@ -1,56 +1,44 @@
 // ==UserScript==
 // @name         Classroom Grader (下書き点入力)
 // @namespace    classroom-grading-automation
-// @version      1.0
-// @description  採点API(localhost:8800)から点数を取得し、Classroom成績簿に下書き点を入力する
+// @version      1.1
+// @description  採点APIから点数を取得し、Classroom成績簿に下書き点を入力する
 // @match        https://classroom.google.com/*
+// @updateURL    https://raw.githubusercontent.com/kake256/class_room_app/main/browser/classroom-grader.user.js
+// @downloadURL  https://raw.githubusercontent.com/kake256/class_room_app/main/browser/classroom-grader.user.js
 // @grant        none
 // ==/UserScript==
 
 /*
  * 使い方:
- *   1. GPUマシンで採点API を起動: docker compose up -d api (= ./run.sh api-up)
- *   2. ブラウザからAPIへ届く経路を用意(いずれか):
- *        a. 同一LAN/SSH転送: 手元PCへ -L 8800:localhost:8800(またはVSCodeのポート転送)
- *           → API欄は http://localhost:8800
- *        b. Tailscale(VPN不可の外部NW向け): GPUマシンで tailscale serve --bg 8800
- *           → API欄は https://<host>.<tailnet>.ts.net(HTTPSなのでmixed-content回避)
- *   3. Tampermonkey等でこのスクリプトを登録
- *   4. 対象課題の「成績」ページ(生徒×課題の一覧)を開く
- *   5. 右下パネルで API接続先 と courseWorkId を入れて「プレビュー」→確認→「入力実行」
+ *   1. GPUマシンで採点API + トンネル(Cloudflare/Tailscale/SSH転送)を用意
+ *   2. 対象課題の「生徒の提出物」ページを開く
+ *   3. 右下パネルで API接続先・token・courseWorkId を入れて「プレビュー」→確認→「入力実行」
  *
  * 安全設計:
  *   - 下書き点(draftGrade)の入力欄のみ操作。「返却」ボタンには一切触れない
  *   - 既に点数が入っているセルはスキップ(上書きしない)
  *   - 入力後に値を読み戻して検証。ズレたら中断
- *   - まずプレビュー(色付けのみ、入力しない)で対象を確認してから実行する
  *
- * 注意: Classroomの成績簿DOMは変わりやすい。動かない場合は下の SELECTORS を
- *       実際のページに合わせて調整すること(ブラウザの検証ツールで確認)。
+ * 注意:
+ *   - Classroomは Trusted Types を使うため innerHTML を使わずDOM APIでUIを構築している
+ *   - 成績簿DOMは変わりやすい。動かない場合は下の SELECTORS を実際のページに合わせて調整
  */
 
 (function () {
   "use strict";
 
-  // 接続先はパネルで設定しブラウザに保存(個人のTailnet名をコードに直書きしない)。
-  //   ローカル/SSH転送: http://localhost:8800
-  //   Tailscale(tailscale serve): https://<host>.<tailnet>.ts.net
   const DEFAULT_API_BASE = "http://localhost:8800";
   const apiBase = () => localStorage.getItem("cga_api_base") || DEFAULT_API_BASE;
-  // 任意: config.yaml の api.token を設定した場合はここに同じ値を保存して使う
   const apiToken = () => localStorage.getItem("cga_api_token") || "";
 
   // ---- ページDOMに依存する部分(壊れたらここを調整) ----
   const SELECTORS = {
-    // 生徒1人分の行。Classroom成績簿は行に aria-label で氏名が入ることが多い
     studentRow: '[role="row"], [role="listitem"]',
-    // 行内の氏名テキスト
     studentName: '[data-student-name], [aria-label]',
-    // 行内の点数入力欄(下書き点)
     gradeInput: 'input[type="text"], input[aria-label*="点"], input[aria-label*="grade" i]',
   };
 
-  // ---- 氏名の正規化(照合用): 学籍番号プレフィックスと空白を除去 ----
   function normName(s) {
     return (s || "")
       .replace(/AR\d{5}/i, "")
@@ -58,7 +46,6 @@
       .trim();
   }
 
-  // ---- API取得 ----
   async function fetchGrades(cw) {
     const headers = apiToken() ? { "X-API-Key": apiToken() } : {};
     const res = await fetch(`${apiBase()}/grades/${cw}`, { headers });
@@ -66,7 +53,6 @@
     return (await res.json()).grades;
   }
 
-  // ---- 成績簿の行を{名前 -> 入力欄}で集める ----
   function collectRows() {
     const rows = [];
     document.querySelectorAll(SELECTORS.studentRow).forEach((row) => {
@@ -79,14 +65,12 @@
     return rows;
   }
 
-  // ---- 1件だけ照合(名前の部分一致) ----
   function matchRow(rows, grade) {
     const target = normName(grade.name);
     return rows.find((r) => r.name && (r.name === target ||
       r.name.includes(target) || target.includes(r.name)));
   }
 
-  // ---- 入力欄に値を設定してReactに通知 ----
   function setInputValue(input, value) {
     const setter = Object.getOwnPropertyDescriptor(
       window.HTMLInputElement.prototype, "value").set;
@@ -96,14 +80,11 @@
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   }
 
-  // ---- メイン処理 ----
   async function run(cw, { preview }) {
     const grades = await fetchGrades(cw);
     const rows = collectRows();
     log(`成績簿の行: ${rows.length}件 / API: ${grades.length}件`);
 
-    // 自動確定(auto_*)と、下書き基準を入れる候補(candidate_3)を対象にする。
-    // reviewは人間判断待ちなので入力しない。
     const targets = grades.filter((g) =>
       String(g.category).startsWith("auto_") || g.category === "candidate_3");
 
@@ -125,7 +106,7 @@
         continue;
       }
       setInputValue(row.input, score);
-      await new Promise((r) => setTimeout(r, 300));  // 反映待ち
+      await new Promise((r) => setTimeout(r, 300));
       if (String(row.input.value).trim() === String(score)) {
         row.row.style.outline = "2px solid #4caf50";  // 成功=緑
         done++;
@@ -142,11 +123,24 @@
     if (miss > 0) log("※未照合は氏名の表記ゆれの可能性。SELECTORSかnormNameを調整。");
   }
 
-  // ---- 操作パネル ----
   function log(msg) {
     const el = document.getElementById("cga-log");
     if (el) el.textContent = msg + "\n" + el.textContent;
     console.log("[ClassroomGrader]", msg);
+  }
+
+  // ---- 操作パネル(Trusted Types対応: innerHTMLを使わずDOM APIで構築) ----
+  function field(parent, labelText, id, width, ph) {
+    const row = document.createElement("div");
+    row.style.marginTop = "4px";
+    row.appendChild(document.createTextNode(labelText + " "));
+    const inp = document.createElement("input");
+    inp.id = id;
+    inp.style.width = width;
+    if (ph) inp.placeholder = ph;
+    row.appendChild(inp);
+    parent.appendChild(row);
+    return inp;
   }
 
   function buildPanel() {
@@ -156,32 +150,44 @@
     p.style.cssText = "position:fixed;right:12px;bottom:12px;z-index:99999;" +
       "background:#fff;border:1px solid #ccc;border-radius:8px;padding:10px;" +
       "font:12px sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.2);width:280px";
-    p.innerHTML =
-      '<b>Classroom Grader</b>' +
-      '<div style="margin-top:4px">API: <input id="cga-api" style="width:210px" ' +
-      'placeholder="http://localhost:8800 か https://…ts.net"></div>' +
-      '<div style="margin-top:2px">token: <input id="cga-token" style="width:200px" ' +
-      'placeholder="任意(api.token設定時)"></div>' +
-      '<div style="margin-top:4px">courseWorkId: <input id="cga-cw" style="width:150px"></div>' +
-      '<div style="margin-top:6px">' +
-      '<button id="cga-preview">プレビュー</button> ' +
-      '<button id="cga-run" style="color:#b00">入力実行</button></div>' +
-      '<pre id="cga-log" style="max-height:140px;overflow:auto;margin:6px 0 0;' +
-      'white-space:pre-wrap;color:#333"></pre>';
+
+    const title = document.createElement("b");
+    title.textContent = "Classroom Grader";
+    p.appendChild(title);
+
+    const apiInput = field(p, "API:", "cga-api", "210px", "https://xxx.trycloudflare.com");
+    const tokenInput = field(p, "token:", "cga-token", "200px", "api.tokenと同じ値");
+    const cwInput = field(p, "courseWorkId:", "cga-cw", "150px", "");
+
+    const btnRow = document.createElement("div");
+    btnRow.style.marginTop = "6px";
+    const previewBtn = document.createElement("button");
+    previewBtn.textContent = "プレビュー";
+    const runBtn = document.createElement("button");
+    runBtn.textContent = "入力実行";
+    runBtn.style.color = "#b00";
+    runBtn.style.marginLeft = "6px";
+    btnRow.appendChild(previewBtn);
+    btnRow.appendChild(runBtn);
+    p.appendChild(btnRow);
+
+    const logEl = document.createElement("pre");
+    logEl.id = "cga-log";
+    logEl.style.cssText = "max-height:140px;overflow:auto;margin:6px 0 0;" +
+      "white-space:pre-wrap;color:#333";
+    p.appendChild(logEl);
+
     document.body.appendChild(p);
 
-    // 接続先・トークンは localStorage に保存(入力のたびに保持)
-    const apiInput = document.getElementById("cga-api");
-    const tokenInput = document.getElementById("cga-token");
     apiInput.value = apiBase();
     tokenInput.value = apiToken();
     apiInput.onchange = () => localStorage.setItem("cga_api_base", apiInput.value.trim());
     tokenInput.onchange = () => localStorage.setItem("cga_api_token", tokenInput.value.trim());
 
-    const cw = () => document.getElementById("cga-cw").value.trim();
-    document.getElementById("cga-preview").onclick = () =>
+    const cw = () => cwInput.value.trim();
+    previewBtn.onclick = () =>
       run(cw(), { preview: true }).catch((e) => log("ERROR: " + e.message));
-    document.getElementById("cga-run").onclick = () => {
+    runBtn.onclick = () => {
       if (confirm("下書き点を入力します(返却はしません)。続行しますか?"))
         run(cw(), { preview: false }).catch((e) => log("ERROR: " + e.message));
     };
