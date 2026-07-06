@@ -105,14 +105,20 @@
     return !stillAdd;
   }
 
-  async function run(cw, { preview }) {
+  async function run(cw, { preview, includeCandidates }) {
     const grades = await fetchGrades(cw);
     const map = collectAddButtons();
-    log(`未採点の点数欄: ${map.size}件 / API: ${grades.length}件`);
+    log(`未採点の点数欄: ${map.size}件 / API: ${grades.length}件` +
+        (includeCandidates ? "(3点候補も入力)" : "(3点候補は保留)"));
 
-    // auto_* と candidate_3 が対象。review は人間判断待ちなので入れない
-    const targets = grades.filter((g) =>
-      String(g.category).startsWith("auto_") || g.category === "candidate_3");
+    // 既定: auto_*(低い点 0/1/2)のみ入力。candidate_3(3点)は保留=TAが確認。
+    // review は人間判断待ちなので入れない。チェック時のみ candidate_3 も入力。
+    const targets = grades.filter((g) => {
+      const c = String(g.category);
+      if (c.startsWith("auto_")) return true;
+      if (c === "candidate_3" && includeCandidates) return true;
+      return false;
+    });
 
     let done = 0, miss = 0, fail = 0;
     for (const g of targets) {
@@ -181,6 +187,16 @@
     const tokenInput = field(p, "token:", "cga-token", "200px", "api.tokenと同じ値");
     const cwInput = field(p, "courseWorkId:", "cga-cw", "150px", "");
 
+    // 3点候補も入力するかのチェックbox(既定OFF=保留)
+    const optRow = document.createElement("label");
+    optRow.style.cssText = "display:block;margin-top:6px";
+    const cand = document.createElement("input");
+    cand.type = "checkbox";
+    cand.id = "cga-cand";
+    optRow.appendChild(cand);
+    optRow.appendChild(document.createTextNode(" 3点候補も入力する(既定は保留)"));
+    p.appendChild(optRow);
+
     const btnRow = document.createElement("div");
     btnRow.style.marginTop = "6px";
     const previewBtn = document.createElement("button");
@@ -207,11 +223,15 @@
     tokenInput.onchange = () => localStorage.setItem("cga_api_token", tokenInput.value.trim());
 
     const cw = () => cwInput.value.trim();
+    const opts = (preview) => ({ preview, includeCandidates: cand.checked });
     previewBtn.onclick = () =>
-      run(cw(), { preview: true }).catch((e) => log("ERROR: " + e.message));
+      run(cw(), opts(true)).catch((e) => log("ERROR: " + e.message));
     runBtn.onclick = () => {
-      if (confirm("未採点の下書き点を入力します(返却はしません)。続行しますか?"))
-        run(cw(), { preview: false }).catch((e) => log("ERROR: " + e.message));
+      const msg = cand.checked
+        ? "未採点の下書き点(3点候補含む)を入力します。続行しますか?"
+        : "未採点のうち低い点(0/1/2)のみ入力します(3点候補は保留)。続行しますか?";
+      if (confirm(msg))
+        run(cw(), opts(false)).catch((e) => log("ERROR: " + e.message));
     };
   }
 
