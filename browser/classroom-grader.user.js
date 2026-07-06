@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Classroom Grader (下書き点入力)
 // @namespace    classroom-grading-automation
-// @version      1.1
+// @version      1.2
 // @description  採点APIから点数を取得し、Classroom成績簿に下書き点を入力する
 // @match        https://classroom.google.com/*
 // @updateURL    https://raw.githubusercontent.com/kake256/class_room_app/main/browser/classroom-grader.user.js
@@ -10,19 +10,14 @@
 // ==/UserScript==
 
 /*
- * 使い方:
- *   1. GPUマシンで採点API + トンネル(Cloudflare/Tailscale/SSH転送)を用意
- *   2. 対象課題の「生徒の提出物」ページを開く
- *   3. 右下パネルで API接続先・token・courseWorkId を入れて「プレビュー」→確認→「入力実行」
+ * 「生徒の提出物」ページ(.../submissions/...)で使う。
+ * 点数欄は <span role="button" aria-label="氏名 さんの成績を追加"> で、
+ * クリックすると <input aria-label="成績を編集"> が現れる方式に対応。
  *
  * 安全設計:
- *   - 下書き点(draftGrade)の入力欄のみ操作。「返却」ボタンには一切触れない
- *   - 既に点数が入っているセルはスキップ(上書きしない)
- *   - 入力後に値を読み戻して検証。ズレたら中断
- *
- * 注意:
- *   - Classroomは Trusted Types を使うため innerHTML を使わずDOM APIでUIを構築している
- *   - 成績簿DOMは変わりやすい。動かない場合は下の SELECTORS を実際のページに合わせて調整
+ *   - 未採点(「成績を追加」)の欄のみ対象。既に点数がある生徒(「成績を編集」)には触れない
+ *   - 「返却」ボタンには一切触れない
+ *   - 入力後に、その生徒の「成績を追加」ボタンが消えたか(=確定したか)を検証。ダメなら中断
  */
 
 (function () {
@@ -31,19 +26,24 @@
   const DEFAULT_API_BASE = "http://localhost:8800";
   const apiBase = () => localStorage.getItem("cga_api_base") || DEFAULT_API_BASE;
   const apiToken = () => localStorage.getItem("cga_api_token") || "";
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // ---- ページDOMに依存する部分(壊れたらここを調整) ----
-  const SELECTORS = {
-    studentRow: '[role="row"], [role="listitem"]',
-    studentName: '[data-student-name], [aria-label]',
-    gradeInput: 'input[type="text"], input[aria-label*="点"], input[aria-label*="grade" i]',
+  // ---- ページDOM依存(壊れたらここを調整) ----
+  const SEL = {
+    // 未採点の点数欄(氏名入り)。「成績を追加」を含む role=button
+    addButton: '[role="button"][aria-label*="成績を追加"]',
+    // クリック後に現れる点数入力欄
+    editInput: 'input[aria-label="成績を編集"]',
   };
 
+  // 氏名正規化(照合用): 学籍番号プレフィックスと空白を除去
   function normName(s) {
-    return (s || "")
-      .replace(/AR\d{5}/i, "")
-      .replace(/[\s　]/g, "")
-      .trim();
+    return (s || "").replace(/AR\d{5}/i, "").replace(/[\s　]/g, "").trim();
+  }
+
+  // aria-label「氏名 さんの成績を追加」から氏名部分を取り出して正規化
+  function nameFromLabel(label) {
+    return normName((label || "").replace(/さんの成績を(追加|編集).*$/, ""));
   }
 
   async function fetchGrades(cw) {
@@ -53,74 +53,96 @@
     return (await res.json()).grades;
   }
 
-  function collectRows() {
-    const rows = [];
-    document.querySelectorAll(SELECTORS.studentRow).forEach((row) => {
-      const nameEl = row.querySelector(SELECTORS.studentName);
-      const input = row.querySelector(SELECTORS.gradeInput);
-      if (!nameEl || !input) return;
-      const name = nameEl.getAttribute("aria-label") || nameEl.textContent;
-      if (name) rows.push({ name: normName(name), input, row });
+  // 未採点の点数ボタンを {name -> ボタン} で集める
+  function collectAddButtons() {
+    const map = new Map();
+    document.querySelectorAll(SEL.addButton).forEach((btn) => {
+      const name = nameFromLabel(btn.getAttribute("aria-label"));
+      if (name) map.set(name, btn);
     });
-    return rows;
+    return map;
   }
 
-  function matchRow(rows, grade) {
-    const target = normName(grade.name);
-    return rows.find((r) => r.name && (r.name === target ||
-      r.name.includes(target) || target.includes(r.name)));
+  function findButton(map, apiName) {
+    const t = normName(apiName);
+    if (map.has(t)) return map.get(t);
+    for (const [name, btn] of map) {
+      if (name.includes(t) || t.includes(name)) return btn;
+    }
+    return null;
   }
 
+  // <input> に値を設定してReactに通知
   function setInputValue(input, value) {
     const setter = Object.getOwnPropertyDescriptor(
       window.HTMLInputElement.prototype, "value").set;
     setter.call(input, String(value));
     input.dispatchEvent(new Event("input", { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  }
+
+  // 1人分: ボタンをクリック→現れたinputに入力→Enterで確定→確定検証
+  async function setGrade(btn, score, name) {
+    btn.click();
+    let input = null;
+    for (let i = 0; i < 30; i++) {
+      input = document.querySelector(SEL.editInput);
+      if (input) break;
+      await sleep(50);
+    }
+    if (!input) return false;
+    setInputValue(input, score);
+    await sleep(120);
+    ["keydown", "keyup"].forEach((type) =>
+      input.dispatchEvent(new KeyboardEvent(type, {
+        key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true,
+      })));
+    if (input.blur) input.blur();
+    await sleep(250);
+    // 検証: この生徒の「成績を追加」ボタンが消えていれば確定成功
+    const stillAdd = [...document.querySelectorAll(SEL.addButton)]
+      .some((b) => nameFromLabel(b.getAttribute("aria-label")) === name);
+    return !stillAdd;
   }
 
   async function run(cw, { preview }) {
     const grades = await fetchGrades(cw);
-    const rows = collectRows();
-    log(`成績簿の行: ${rows.length}件 / API: ${grades.length}件`);
+    const map = collectAddButtons();
+    log(`未採点の点数欄: ${map.size}件 / API: ${grades.length}件`);
 
+    // auto_* と candidate_3 が対象。review は人間判断待ちなので入れない
     const targets = grades.filter((g) =>
       String(g.category).startsWith("auto_") || g.category === "candidate_3");
 
-    let done = 0, skip = 0, miss = 0, fail = 0;
+    let done = 0, miss = 0, fail = 0;
     for (const g of targets) {
-      const row = matchRow(rows, g);
-      if (!row) { miss++; continue; }
+      const btn = findButton(map, g.name);
+      if (!btn) { miss++; continue; }   // 既に採点済み or 氏名不一致
       const score = g.score_after_late ?? g.content_score;
 
-      if (row.input.value && row.input.value.trim() !== "") {
-        row.row.style.outline = "2px solid #999";  // 既存点あり=グレー
-        skip++;
-        continue;
-      }
       if (preview) {
-        row.row.style.outline = "2px solid #4a90d9";  // 入力予定=青
-        row.row.title = `→ ${score}点 (${g.category})`;
+        btn.style.outline = "2px solid #4a90d9";
+        btn.title = `→ ${score}点 (${g.category})`;
         done++;
         continue;
       }
-      setInputValue(row.input, score);
-      await new Promise((r) => setTimeout(r, 300));
-      if (String(row.input.value).trim() === String(score)) {
-        row.row.style.outline = "2px solid #4caf50";  // 成功=緑
-        done++;
-      } else {
-        row.row.style.outline = "2px solid #e53935";  // 失敗=赤
+      const ok = await setGrade(btn, score, findKeyName(map, btn));
+      btn.style.outline = ok ? "2px solid #4caf50" : "2px solid #e53935";
+      if (ok) { done++; } else {
         fail++;
-        log(`!! 検証NG: ${g.name} 期待=${score} 実際=${row.input.value}。中断します。`);
+        log(`!! 確定できず: ${g.name}。中断します(既入力分は保持)。`);
         break;
       }
+      await sleep(200);
     }
     log(`${preview ? "プレビュー" : "入力"}完了: 対象${targets.length} / ` +
-        `${preview ? "予定" : "入力"}${done} / スキップ(既存)${skip} / ` +
-        `未照合${miss} / 失敗${fail}`);
-    if (miss > 0) log("※未照合は氏名の表記ゆれの可能性。SELECTORSかnormNameを調整。");
+        `${preview ? "予定" : "確定"}${done} / 未照合(採点済み含む)${miss} / 失敗${fail}`);
+    if (map.size === 0) log("※未採点の点数欄が0件。全員採点済みか、SEL.addButtonを要調整。");
+  }
+
+  function findKeyName(map, btn) {
+    for (const [name, b] of map) if (b === btn) return name;
+    return nameFromLabel(btn.getAttribute("aria-label"));
   }
 
   function log(msg) {
@@ -129,7 +151,7 @@
     console.log("[ClassroomGrader]", msg);
   }
 
-  // ---- 操作パネル(Trusted Types対応: innerHTMLを使わずDOM APIで構築) ----
+  // ---- 操作パネル(Trusted Types対応: DOM APIで構築) ----
   function field(parent, labelText, id, width, ph) {
     const row = document.createElement("div");
     row.style.marginTop = "4px";
@@ -188,7 +210,7 @@
     previewBtn.onclick = () =>
       run(cw(), { preview: true }).catch((e) => log("ERROR: " + e.message));
     runBtn.onclick = () => {
-      if (confirm("下書き点を入力します(返却はしません)。続行しますか?"))
+      if (confirm("未採点の下書き点を入力します(返却はしません)。続行しますか?"))
         run(cw(), { preview: false }).catch((e) => log("ERROR: " + e.message));
     };
   }
