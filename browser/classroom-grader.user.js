@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Classroom Grader (下書き点入力)
 // @namespace    classroom-grading-automation
-// @version      1.5
+// @version      1.6
 // @description  採点APIから点数を取得し、Classroom成績簿に下書き点を入力する
 // @match        https://classroom.google.com/*
 // @updateURL    https://raw.githubusercontent.com/kake256/class_room_app/main/browser/classroom-grader.user.js
@@ -96,27 +96,6 @@
     return !stillAdd;
   }
 
-  // スクロール可能なリスト容器を探す(仮想スクロール対応)
-  function scrollContainer() {
-    const btn = document.querySelector(SEL.addButton);
-    let el = btn ? btn.parentElement : null;
-    while (el && el !== document.body) {
-      const oy = getComputedStyle(el).overflowY;
-      if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 20) return el;
-      el = el.parentElement;
-    }
-    return document.scrollingElement || document.documentElement;
-  }
-
-  // 表示中ボタン名 bname に対応する残りターゲットのキーを返す(完全一致→部分一致)
-  function takeMatch(remaining, bname) {
-    if (remaining.has(bname)) return bname;
-    for (const key of remaining.keys()) {
-      if (key && (key.includes(bname) || bname.includes(key))) return key;
-    }
-    return null;
-  }
-
   async function run(cw, { preview, includeCandidates, includeReview }) {
     const grades = await fetchGrades(cw);
     const inc = [];
@@ -131,44 +110,36 @@
       if (c === "review" && includeReview) return true;
       return false;
     });
-    // 残り: normName -> {score, name}
-    const remaining = new Map();
-    targets.forEach((g) => remaining.set(normName(g.name),
-      { score: g.score_after_late ?? g.content_score, name: g.name }));
-    log(`API対象: ${targets.length}件` + (inc.length ? `(低い点+${inc.join("+")})` : "(低い点のみ)"));
+    // 現在表示中の未採点ボタンを集める(表示中の行のみDOMに存在=仮想スクロール)
+    const map = collectAddButtons();
+    log(`未採点欄(表示中): ${map.size}件 / API対象: ${targets.length}件` +
+        (inc.length ? `(低い点+${inc.join("+")})` : "(低い点のみ)"));
 
-    // 仮想スクロール対策: リストを上から下までスクロールしながら、表示された行を順次処理
-    const cont = scrollContainer();
-    if (cont) { cont.scrollTop = 0; await sleep(400); }
-    let done = 0, fail = 0, stagnant = 0;
-    for (let pass = 0; pass < 400 && remaining.size > 0 && !fail; pass++) {
-      for (const [bname, btn] of collectAddButtons()) {
-        const key = takeMatch(remaining, bname);
-        if (!key) continue;
-        const t = remaining.get(key);
-        if (preview) {
-          btn.style.outline = "2px solid #4a90d9";
-          btn.title = `→ ${t.score}点`;
-          remaining.delete(key); done++;
-        } else {
-          const ok = await setGrade(btn, t.score, bname);
-          btn.style.outline = ok ? "2px solid #4caf50" : "2px solid #e53935";
-          if (ok) { remaining.delete(key); done++; }
-          else { fail++; log(`!! 確定できず: ${t.name}。中断(既入力分は保持)。`); break; }
-        }
+    let done = 0, miss = 0, fail = 0;
+    for (const g of targets) {
+      const key = normName(g.name);
+      let btn = map.get(key);
+      if (!btn) {  // 部分一致フォールバック
+        for (const [n, b] of map) if (n.includes(key) || key.includes(n)) { btn = b; break; }
       }
-      if (fail || !cont) break;
-      const before = cont.scrollTop;
-      cont.scrollTop = before + Math.max(200, cont.clientHeight * 0.8);
-      await sleep(450);
-      if (cont.scrollTop <= before + 2) { if (++stagnant >= 2) break; } else stagnant = 0;
+      if (!btn) { miss++; continue; }   // 既採点(返却済み)or 画面外
+      const score = g.score_after_late ?? g.content_score;
+      if (preview) {
+        btn.style.outline = "2px solid #4a90d9";
+        btn.title = `→ ${score}点`;
+        done++;
+        continue;
+      }
+      const ok = await setGrade(btn, score, key);
+      btn.style.outline = ok ? "2px solid #4caf50" : "2px solid #e53935";
+      if (ok) { done++; }
+      else { fail++; log(`!! 確定できず: ${g.name}。中断(既入力分は保持)`); break; }
+      await sleep(200);
     }
-    log(`${preview ? "プレビュー" : "入力"}完了: ${preview ? "予定" : "確定"}${done} / ` +
-        `未照合${remaining.size} / 失敗${fail}`);
-    if (remaining.size > 0) {
-      const names = [...remaining.values()].slice(0, 8).map((v) => v.name).join(", ");
-      log(`未照合(採点済み or 表示外): ${names}${remaining.size > 8 ? " ほか" : ""}`);
-    }
+    log(`${preview ? "プレビュー" : "入力"}完了: 対象${targets.length} / ` +
+        `${preview ? "予定" : "確定"}${done} / 未照合${miss} / 失敗${fail}`);
+    if (miss > 0)
+      log("※未照合=既採点(返却済み)or 画面外。画面外はリストを下までスクロールして再実行(冪等)。");
   }
 
   function log(msg) {
