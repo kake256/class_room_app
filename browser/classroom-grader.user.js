@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Classroom Grader (0/2点=自動返却・1/3点=下書き)
 // @namespace    classroom-grading-automation
-// @version      3.0
-// @description  採点APIから点数を取得。0/2点は下書き入力+自動返却、1/3点ほかは下書きのみ。全削除も可
+// @version      3.1
+// @description  採点APIから点数を取得。0/2点は下書き入力+自動返却(下書きのみも可)、1/3点ほかは下書きのみ。全削除も可
 // @match        https://classroom.google.com/*
 // @updateURL    https://raw.githubusercontent.com/kake256/class_room_app/main/browser/classroom-grader.user.js
 // @downloadURL  https://raw.githubusercontent.com/kake256/class_room_app/main/browser/classroom-grader.user.js
@@ -20,6 +20,7 @@
  *
  * 動作:
  *   - 0/2点 入力+返却: 自動返却組を下書き入力→チェック選択→返却(完全自動)
+ *   - 0/2点 下書き入力: 自動返却組を下書き入力のみ(返却しない・確認してから別途返却したい時)
  *   - 1/3点 下書き入力: 下書き組を未返却の全員に下書き入力(返却しない)
  *   - 下書き全削除: 未返却の生徒の下書き点をまとめて消す(再分析後のやり直し用)
  *
@@ -261,9 +262,10 @@
     log("プレビュー: 緑=0/2点(自動返却) / 青=1/3点ほか(下書きのみ)");
   }
 
-  async function runDraftInput(cw) {
-    const targets = buildTargets(await fetchGrades(cw), DRAFT_CATS);
-    log(`下書き入力対象(1/3点ほか・未返却): ${targets.size}件`);
+  // 下書きのみ投入(返却しない)。cats で対象カテゴリを切替
+  async function runDraftInput(cw, cats, label) {
+    const targets = buildTargets(await fetchGrades(cw), cats);
+    log(`下書き入力対象(${label}・未返却): ${targets.size}件`);
     const r = await inputDrafts(targets, { preview: false });
     log(`下書き入力完了: 確定${r.done}` +
       `${r.skip ? " / スキップ(既存)" + r.skip : ""} / 未照合${r.left} / 失敗${r.fail}`);
@@ -388,9 +390,13 @@
 
     const btnRow2 = document.createElement("div");
     btnRow2.style.marginTop = "6px";
+    const draft02Btn = document.createElement("button");
+    draft02Btn.textContent = "0/2点 下書き入力";
+    draft02Btn.style.cssText = "color:#2e7d32";
     const delBtn = document.createElement("button");
     delBtn.textContent = "下書き全削除";
-    delBtn.style.cssText = "color:#fff;background:#b00";
+    delBtn.style.cssText = "color:#fff;background:#b00;margin-left:6px";
+    btnRow2.appendChild(draft02Btn);
     btnRow2.appendChild(delBtn);
     p.appendChild(btnRow2);
 
@@ -412,7 +418,11 @@
       runPreview(cw()).catch((e) => log("ERROR: " + e.message));
     draftBtn.onclick = () => {
       if (confirm("1/3点ほか(auto_1/candidate_3/review)を未返却の全員に下書き入力します(返却しません)。続行しますか?"))
-        runDraftInput(cw()).catch((e) => log("ERROR: " + e.message));
+        runDraftInput(cw(), DRAFT_CATS, "1/3点ほか").catch((e) => log("ERROR: " + e.message));
+    };
+    draft02Btn.onclick = () => {
+      if (confirm("0/2点(auto_0/auto_2)を未返却の全員に下書き入力します(返却しません)。続行しますか?"))
+        runDraftInput(cw(), RETURN_CATS, "0/2点").catch((e) => log("ERROR: " + e.message));
     };
     returnBtn.onclick = () =>
       runAutoReturn(cw()).catch((e) => log("ERROR: " + e.message));
