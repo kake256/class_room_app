@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Classroom Grader (下書き点入力)
 // @namespace    classroom-grading-automation
-// @version      1.6
+// @version      1.7
 // @description  採点APIから点数を取得し、Classroom成績簿に下書き点を入力する
 // @match        https://classroom.google.com/*
 // @updateURL    https://raw.githubusercontent.com/kake256/class_room_app/main/browser/classroom-grader.user.js
@@ -74,14 +74,24 @@
 
   // 1人分: ボタンをクリック→現れたinputに入力→Enterで確定→確定検証
   async function setGrade(btn, score, name) {
+    // 既に開いている編集欄があれば閉じる(取り違え・連鎖の防止)
+    const stale = document.querySelector(SEL.editInput);
+    if (stale) { stale.blur(); await sleep(150); }
+
     btn.click();
+    // このクリックで開いた入力欄だけを対象にする(activeElement)。
+    // 別セルの編集欄を掴んで誤って上書きしないため querySelector は使わない。
     let input = null;
     for (let i = 0; i < 30; i++) {
-      input = document.querySelector(SEL.editInput);
-      if (input) break;
+      const ae = document.activeElement;
+      if (ae && ae.matches && ae.matches(SEL.editInput)) { input = ae; break; }
       await sleep(50);
     }
     if (!input) return false;
+    // 既に点数がある欄は絶対に上書きしない(data-initial-value に既存値が入る)
+    const initial = input.getAttribute("data-initial-value");
+    if (initial && initial.trim() !== "") { input.blur(); return "skip"; }
+
     setInputValue(input, score);
     await sleep(120);
     ["keydown", "keyup"].forEach((type) =>
@@ -115,14 +125,11 @@
     log(`未採点欄(表示中): ${map.size}件 / API対象: ${targets.length}件` +
         (inc.length ? `(低い点+${inc.join("+")})` : "(低い点のみ)"));
 
-    let done = 0, miss = 0, fail = 0;
+    let done = 0, miss = 0, skip = 0, fail = 0;
     for (const g of targets) {
       const key = normName(g.name);
-      let btn = map.get(key);
-      if (!btn) {  // 部分一致フォールバック
-        for (const [n, b] of map) if (n.includes(key) || key.includes(n)) { btn = b; break; }
-      }
-      if (!btn) { miss++; continue; }   // 既採点(返却済み)or 画面外
+      const btn = map.get(key);              // 完全一致のみ(部分一致は誤爆源なので不使用)
+      if (!btn) { miss++; continue; }        // 既採点(返却済み)or 画面外
       const score = g.score_after_late ?? g.content_score;
       if (preview) {
         btn.style.outline = "2px solid #4a90d9";
@@ -130,14 +137,15 @@
         done++;
         continue;
       }
-      const ok = await setGrade(btn, score, key);
-      btn.style.outline = ok ? "2px solid #4caf50" : "2px solid #e53935";
-      if (ok) { done++; }
-      else { fail++; log(`!! 確定できず: ${g.name}。中断(既入力分は保持)`); break; }
+      const res = await setGrade(btn, score, key);
+      if (res === "skip") { btn.style.outline = "2px solid #999"; skip++; }
+      else if (res) { btn.style.outline = "2px solid #4caf50"; done++; }
+      else { btn.style.outline = "2px solid #e53935"; fail++;
+             log(`!! 確定できず: ${g.name}。中断(既入力分は保持)`); break; }
       await sleep(200);
     }
     log(`${preview ? "プレビュー" : "入力"}完了: 対象${targets.length} / ` +
-        `${preview ? "予定" : "確定"}${done} / 未照合${miss} / 失敗${fail}`);
+        `${preview ? "予定" : "確定"}${done} / スキップ(既存)${skip} / 未照合${miss} / 失敗${fail}`);
     if (miss > 0)
       log("※未照合=既採点(返却済み)or 画面外。画面外はリストを下までスクロールして再実行(冪等)。");
   }
