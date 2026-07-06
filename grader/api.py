@@ -30,7 +30,7 @@ from .fetch import normalize_gid
 
 # 成績簿入力に必要な列だけ返す(evidenceはTAの確認用)
 REPORT_FIELDS = [
-    "student_id", "name", "content_score", "category", "tier",
+    "student_id", "name", "state", "content_score", "category", "tier",
     "judge_score", "score_after_late", "flags", "evidence",
 ]
 

@@ -138,12 +138,16 @@ docker compose run --rm grader run --coursework <courseWorkId> --lenient
 Classroom API は「課題を作成したプロジェクト」以外からの成績書き込みを拒否する
 (UI作成課題は `ProjectPermissionDenied`)。そのため書き戻しは **2通り**:
 
-- **方式A**: 採点API + ブラウザのユーザースクリプト … UI作成課題でも可(推奨)。
-  `./run.sh api-up` でAPIを起動し、`browser/classroom-grader.user.js` から下書き点を入力。
-  外部NWからは SSH転送 / Cloudflare Tunnel(手元PCに導入不要) / Tailscale で到達
+- **方式A**: 採点API + ブラウザのユーザースクリプト … UI作成課題でも可(推奨・実運用済み)。
+  `./run.sh api-up` でAPIを起動し、`browser/classroom-grader.user.js` のパネルから
+  **未返却の全員にシステム点(1〜3点)を下書き一括入力**。「下書き全削除」で入れ直しも可能。
+  返却済みの生徒には触れない(state判定)。外部NWからは SSH転送 /
+  Cloudflare Tunnel(手元PCに導入不要) / Tailscale で到達
 - **方式B**: `./run.sh push-grades <cw>` … このツール/API経由で作成した課題のみ直接書き込み
 
-サーバー構成・アクセス経路(localhost/SSH/Tailscale)・ユーザースクリプトの詳細手順は
+運用の流れ: 全員分を下書き入力 → 成績簿で判定のズレだけ手直し → 「返却」で確定。
+再分析後は「下書き全削除」→ 再入力。サーバー構成・アクセス経路(localhost/SSH/
+Cloudflare/Tailscale)・ユーザースクリプトの詳細は
 **[docs/grade-writeback.md](docs/grade-writeback.md)** を参照。
 
 ---

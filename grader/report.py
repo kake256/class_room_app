@@ -131,7 +131,11 @@ def build_report(cfg: Config, coursework_id: str) -> pd.DataFrame:
         final_after_late, waiver = apply_late_policy(score, late, penalty)
         if waiver:
             r["flags"] = sorted(set(r.get("flags", [])) | {"late_waiver_candidate"})
-        row: dict[str, Any] = {"student_id": sid, "name": m.get("name", "")}
+        row: dict[str, Any] = {
+            "student_id": sid,
+            "name": m.get("name", ""),
+            "state": m.get("state", ""),   # TURNED_IN / RETURNED 等(書き戻し時の安全判定用)
+        }
         for i, run in enumerate(r.get("runs", [])[:2], start=1):
             for name, s in _criterion_scores(run).items():
                 row[f"{name}_run{i}"] = s

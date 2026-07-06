@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Classroom Grader (下書き点入力)
 // @namespace    classroom-grading-automation
-// @version      1.8
-// @description  採点APIから点数を取得し、Classroom成績簿に下書き点を入力する
+// @version      2.0
+// @description  採点APIから点数を取得し、Classroom成績簿に下書き点を入力/全削除する
 // @match        https://classroom.google.com/*
 // @updateURL    https://raw.githubusercontent.com/kake256/class_room_app/main/browser/classroom-grader.user.js
 // @downloadURL  https://raw.githubusercontent.com/kake256/class_room_app/main/browser/classroom-grader.user.js
@@ -11,13 +11,18 @@
 
 /*
  * 「生徒の提出物」ページ(.../submissions/...)で使う。
- * 点数欄は <span role="button" aria-label="氏名 さんの成績を追加"> で、
- * クリックすると <input aria-label="成績を編集"> が現れる方式に対応。
+ *
+ * 動作:
+ *   - 入力実行: システム採点(1点/2点/3点)を未返却(TURNED_IN)の全員に下書き入力。
+ *     判定ズレは下書きを見ながらClassroom上で手直しする運用
+ *   - 下書き全削除: 未返却の生徒の下書き点をまとめて消す(再分析後のやり直し用)
  *
  * 安全設計:
- *   - 未採点(「成績を追加」)の欄のみ対象。既に点数がある生徒(「成績を編集」)には触れない
+ *   - 返却済み(RETURNED)の生徒には入力も削除も一切触れない(APIのstateで判定)
  *   - 「返却」ボタンには一切触れない
- *   - 入力後に、その生徒の「成績を追加」ボタンが消えたか(=確定したか)を検証。ダメなら中断
+ *   - 入力: 既に値がある欄は上書きしない(スキップ)
+ *   - クリックで開いた入力欄(activeElement)だけを操作(別セルへの誤書き込み防止)
+ *   - 各操作後に結果を検証。失敗したら中断
  */
 
 (function () {
@@ -30,8 +35,10 @@
 
   // ---- ページDOM依存(壊れたらここを調整) ----
   const SEL = {
-    // 未採点の点数欄(氏名入り)。「成績を追加」を含む role=button
+    // 未採点の点数欄(氏名入り)
     addButton: '[role="button"][aria-label*="成績を追加"]',
+    // 点数欄全般(未採点・下書きあり両方。氏名+「さんの成績」を含む)
+    anyGradeButton: '[role="button"][aria-label*="さんの成績"]',
     // クリック後に現れる点数入力欄
     editInput: 'input[aria-label="成績を編集"]',
   };
@@ -41,9 +48,9 @@
     return (s || "").replace(/AR\d{5}/i, "").replace(/[\s　]/g, "").trim();
   }
 
-  // aria-label「氏名 さんの成績を追加」から氏名部分を取り出して正規化
+  // aria-label「氏名 さんの成績を追加/編集/…」から氏名部分を取り出して正規化
   function nameFromLabel(label) {
-    return normName((label || "").replace(/さんの成績を(追加|編集).*$/, ""));
+    return normName((label || "").replace(/さんの成績.*$/, ""));
   }
 
   async function fetchGrades(cw) {
@@ -53,10 +60,10 @@
     return (await res.json()).grades;
   }
 
-  // 未採点の点数ボタンを {name -> ボタン} で集める
-  function collectAddButtons() {
+  // セレクタに合う点数ボタンを {正規化氏名 -> ボタン} で集める
+  function collectButtons(selector) {
     const map = new Map();
-    document.querySelectorAll(SEL.addButton).forEach((btn) => {
+    document.querySelectorAll(selector).forEach((btn) => {
       const name = nameFromLabel(btn.getAttribute("aria-label"));
       if (name) map.set(name, btn);
     });
@@ -72,97 +79,130 @@
     input.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
-  // 1人分: ボタンをクリック→現れたinputに入力→Enterで確定→確定検証
-  async function setGrade(btn, score, name) {
-    // 既に開いている編集欄があれば閉じる(取り違え・連鎖の防止)
+  // ボタンをクリックして、そのクリックで開いた入力欄(activeElement)を返す
+  async function openCell(btn) {
     const stale = document.querySelector(SEL.editInput);
     if (stale) { stale.blur(); await sleep(150); }
-
     btn.click();
-    // このクリックで開いた入力欄だけを対象にする(activeElement)。
-    // 別セルの編集欄を掴んで誤って上書きしないため querySelector は使わない。
-    let input = null;
     for (let i = 0; i < 30; i++) {
       const ae = document.activeElement;
-      if (ae && ae.matches && ae.matches(SEL.editInput)) { input = ae; break; }
+      if (ae && ae.matches && ae.matches(SEL.editInput)) return ae;
       await sleep(50);
     }
-    if (!input) return false;
-    // 既に点数がある欄は絶対に上書きしない(data-initial-value に既存値が入る)
-    const initial = input.getAttribute("data-initial-value");
-    if (initial && initial.trim() !== "") { input.blur(); return "skip"; }
+    return null;
+  }
 
-    setInputValue(input, score);
-    await sleep(120);
+  function pressEnter(input) {
     ["keydown", "keyup"].forEach((type) =>
       input.dispatchEvent(new KeyboardEvent(type, {
         key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true,
       })));
     if (input.blur) input.blur();
+  }
+
+  // 1人分入力: 空欄のみに書き込み、確定を検証
+  async function setGrade(btn, score, name) {
+    const input = await openCell(btn);
+    if (!input) return false;
+    const initial = input.getAttribute("data-initial-value");
+    if (initial && initial.trim() !== "") { input.blur(); return "skip"; }  // 既存値は守る
+    setInputValue(input, score);
+    await sleep(120);
+    pressEnter(input);
     await sleep(250);
-    // 検証: この生徒の「成績を追加」ボタンが消えていれば確定成功
     const stillAdd = [...document.querySelectorAll(SEL.addButton)]
       .some((b) => nameFromLabel(b.getAttribute("aria-label")) === name);
     return !stillAdd;
   }
 
-  async function run(cw, { preview, includeCandidates, includeReview }) {
-    const grades = await fetchGrades(cw);
-    const inc = [];
-    if (includeCandidates) inc.push("3点候補");
-    if (includeReview) inc.push("review");
+  // 1人分削除: 値がある欄を空にして確定(「成績を追加」に戻れば成功)
+  async function clearGrade(btn, name) {
+    const input = await openCell(btn);
+    if (!input) return false;
+    const initial = input.getAttribute("data-initial-value");
+    if (!initial || initial.trim() === "") { input.blur(); return "skip"; }  // 元々空
+    setInputValue(input, "");
+    await sleep(120);
+    pressEnter(input);
+    await sleep(300);
+    const backToAdd = [...document.querySelectorAll(SEL.addButton)]
+      .some((b) => nameFromLabel(b.getAttribute("aria-label")) === name);
+    return backToAdd;
+  }
 
-    // 既定: auto_*(低い点 0/1/2)のみ。チェック時のみ candidate_3 / review も含める。
-    const targets = grades.filter((g) => {
-      const c = String(g.category);
-      if (c.startsWith("auto_")) return true;
-      if (c === "candidate_3" && includeCandidates) return true;
-      if (c === "review" && includeReview) return true;
-      return false;
-    });
-    // 残り: normName -> {score, name}
-    const remaining = new Map();
-    targets.forEach((g) => remaining.set(normName(g.name),
-      { score: g.score_after_late ?? g.content_score, name: g.name }));
-    log(`API対象: ${remaining.size}件` +
-        (inc.length ? `(低い点+${inc.join("+")})` : "(低い点のみ)"));
-
-    // 表示中の生徒だけ処理 → 最後の未採点ボタンを表示領域に入れて次の行を描画 → 繰り返す
-    // (APIの順で離れた生徒に飛ばず、見えている行から順に処理して仮想スクロールに対応)
+  // 表示中の行を処理→最後の点数欄をscrollIntoViewで送る→繰り返し(仮想スクロール対応)
+  async function sweep(remaining, selector, handler) {
     let done = 0, skip = 0, fail = 0, stagnant = 0, lastSig = "";
-    for (let pass = 0; pass < 80 && remaining.size > 0 && !fail && stagnant < 3; pass++) {
+    for (let pass = 0; pass < 120 && remaining.size > 0 && !fail && stagnant < 3; pass++) {
       let processed = 0;
-      for (const [name, btn] of collectAddButtons()) {
-        if (!remaining.has(name)) continue;   // 対象外(review未選択/採点済み)は触らない
+      for (const [name, btn] of collectButtons(selector)) {
+        if (!remaining.has(name)) continue;
         const t = remaining.get(name);
-        if (preview) {
-          btn.style.outline = "2px solid #4a90d9";
-          btn.title = `→ ${t.score}点`;
-          remaining.delete(name); done++; processed++;
-        } else {
-          const res = await setGrade(btn, t.score, name);
-          if (res === "skip") { btn.style.outline = "2px solid #999"; skip++; }
-          else if (res) { btn.style.outline = "2px solid #4caf50"; done++; }
-          else { btn.style.outline = "2px solid #e53935"; fail++;
-                 log(`!! 確定できず: ${t.name}。中断(既入力分は保持)`); break; }
-          remaining.delete(name); processed++;
-        }
+        const res = await handler(btn, t, name);
+        if (res === "fail") { fail++; break; }
+        if (res === "skip") skip++;
+        else if (res === "done") done++;
+        remaining.delete(name);
+        processed++;
       }
       if (fail) break;
-      // 最後の未採点ボタンを表示領域に入れて、その先の行を描画させる(容器を選ばない確実な方法)
-      const btns = document.querySelectorAll(SEL.addButton);
+      const btns = document.querySelectorAll(selector);
       const sig = btns.length + "|" +
         (btns.length ? btns[btns.length - 1].getAttribute("aria-label") : "");
       if (btns.length) btns[btns.length - 1].scrollIntoView({ block: "center" });
       await sleep(500);
-      // 新しい行も出ず処理もしないパスが続いたら終了
       if (processed === 0 && sig === lastSig) stagnant++; else stagnant = 0;
       lastSig = sig;
     }
-    log(`${preview ? "プレビュー" : "入力"}完了: ${preview ? "予定" : "確定"}${done}` +
-        `${skip ? " / スキップ(既存)" + skip : ""} / 未照合${remaining.size} / 失敗${fail}`);
-    if (remaining.size > 0)
-      log("※未照合=既採点(返却済み)。これが残るのは正常(全員採点済み)。");
+    return { done, skip, fail, left: remaining.size };
+  }
+
+  // 対象: 未返却(TURNED_IN)で点数のある生徒(auto_* / candidate_3 / review すべて)
+  function buildTargets(grades) {
+    const remaining = new Map();
+    grades.forEach((g) => {
+      const c = String(g.category);
+      const score = g.score_after_late ?? g.content_score;
+      const ok = (c.startsWith("auto_") || c === "candidate_3" || c === "review") &&
+        score !== null && score !== undefined && g.state === "TURNED_IN";
+      if (ok) remaining.set(normName(g.name), { score, name: g.name });
+    });
+    return remaining;
+  }
+
+  async function runInput(cw, { preview }) {
+    const remaining = buildTargets(await fetchGrades(cw));
+    log(`入力対象(未返却・全カテゴリ): ${remaining.size}件`);
+    const r = await sweep(remaining, SEL.addButton, async (btn, t, name) => {
+      if (preview) {
+        btn.style.outline = "2px solid #4a90d9";
+        btn.title = `→ ${t.score}点`;
+        return "done";
+      }
+      const res = await setGrade(btn, t.score, name);
+      if (res === "skip") { btn.style.outline = "2px solid #999"; return "skip"; }
+      if (res) { btn.style.outline = "2px solid #4caf50"; return "done"; }
+      btn.style.outline = "2px solid #e53935";
+      log(`!! 確定できず: ${t.name}。中断(既入力分は保持)`);
+      return "fail";
+    });
+    log(`${preview ? "プレビュー" : "入力"}完了: ${preview ? "予定" : "確定"}${r.done}` +
+        `${r.skip ? " / スキップ(既存)" + r.skip : ""} / 未照合${r.left} / 失敗${r.fail}`);
+    if (r.left > 0) log("※未照合=下書き入力済み(点数欄が「追加」でない)or 画面外");
+  }
+
+  async function runDeleteAll(cw) {
+    const remaining = buildTargets(await fetchGrades(cw));
+    log(`削除対象(未返却のみ): 最大${remaining.size}件`);
+    const r = await sweep(remaining, SEL.anyGradeButton, async (btn, t, name) => {
+      const res = await clearGrade(btn, name);
+      if (res === "skip") { btn.style.outline = "2px dashed #999"; return "skip"; }
+      if (res) { btn.style.outline = "2px solid #ff9800"; return "done"; }
+      btn.style.outline = "2px solid #e53935";
+      log(`!! 削除できず: ${t.name}。中断`);
+      return "fail";
+    });
+    log(`全削除完了: 削除${r.done} / 元々空${r.skip} / 未照合${r.left} / 失敗${r.fail}`);
   }
 
   function log(msg) {
@@ -191,46 +231,34 @@
     p.id = "cga-panel";
     p.style.cssText = "position:fixed;right:12px;bottom:12px;z-index:99999;" +
       "background:#fff;border:1px solid #ccc;border-radius:8px;padding:10px;" +
-      "font:12px sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.2);width:280px";
+      "font:12px sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.2);width:290px";
 
     const title = document.createElement("b");
-    title.textContent = "Classroom Grader";
+    title.textContent = "Classroom Grader v2";
     p.appendChild(title);
 
-    const apiInput = field(p, "API:", "cga-api", "210px", "https://xxx.trycloudflare.com");
-    const tokenInput = field(p, "token:", "cga-token", "200px", "api.tokenと同じ値");
+    const apiInput = field(p, "API:", "cga-api", "215px", "https://xxx.trycloudflare.com");
+    const tokenInput = field(p, "token:", "cga-token", "205px", "api.tokenと同じ値");
     const cwInput = field(p, "courseWorkId:", "cga-cw", "150px", "");
 
-    // 入力対象を広げるチェックbox(既定OFF=低い点のみ)
-    function checkbox(labelText, id) {
-      const row = document.createElement("label");
-      row.style.cssText = "display:block;margin-top:6px";
-      const box = document.createElement("input");
-      box.type = "checkbox";
-      box.id = id;
-      row.appendChild(box);
-      row.appendChild(document.createTextNode(" " + labelText));
-      p.appendChild(row);
-      return box;
-    }
-    const cand = checkbox("3点候補も入力する(既定は保留)", "cga-cand");
-    const rev = checkbox("review(要確認)も入力する", "cga-rev");
-
     const btnRow = document.createElement("div");
-    btnRow.style.marginTop = "6px";
+    btnRow.style.marginTop = "8px";
     const previewBtn = document.createElement("button");
     previewBtn.textContent = "プレビュー";
     const runBtn = document.createElement("button");
     runBtn.textContent = "入力実行";
-    runBtn.style.color = "#b00";
-    runBtn.style.marginLeft = "6px";
+    runBtn.style.cssText = "color:#b00;margin-left:6px";
+    const delBtn = document.createElement("button");
+    delBtn.textContent = "下書き全削除";
+    delBtn.style.cssText = "color:#fff;background:#b00;margin-left:6px";
     btnRow.appendChild(previewBtn);
     btnRow.appendChild(runBtn);
+    btnRow.appendChild(delBtn);
     p.appendChild(btnRow);
 
     const logEl = document.createElement("pre");
     logEl.id = "cga-log";
-    logEl.style.cssText = "max-height:140px;overflow:auto;margin:6px 0 0;" +
+    logEl.style.cssText = "max-height:150px;overflow:auto;margin:6px 0 0;" +
       "white-space:pre-wrap;color:#333";
     p.appendChild(logEl);
 
@@ -242,20 +270,16 @@
     tokenInput.onchange = () => localStorage.setItem("cga_api_token", tokenInput.value.trim());
 
     const cw = () => cwInput.value.trim();
-    const opts = (preview) => ({
-      preview, includeCandidates: cand.checked, includeReview: rev.checked,
-    });
     previewBtn.onclick = () =>
-      run(cw(), opts(true)).catch((e) => log("ERROR: " + e.message));
+      runInput(cw(), { preview: true }).catch((e) => log("ERROR: " + e.message));
     runBtn.onclick = () => {
-      const extra = [];
-      if (cand.checked) extra.push("3点候補");
-      if (rev.checked) extra.push("review");
-      const msg = extra.length
-        ? `未採点の下書き点(低い点 + ${extra.join("+")})を入力します。続行しますか?`
-        : "未採点のうち低い点(0/1/2)のみ入力します(3点候補・reviewは保留)。続行しますか?";
-      if (confirm(msg))
-        run(cw(), opts(false)).catch((e) => log("ERROR: " + e.message));
+      if (confirm("未返却の全員にシステム点(1〜3点)を下書き入力します(返却はしません)。続行しますか?"))
+        runInput(cw(), { preview: false }).catch((e) => log("ERROR: " + e.message));
+    };
+    delBtn.onclick = () => {
+      if (confirm("未返却の生徒の下書き点をすべて削除します(返却済みには触れません)。よろしいですか?") &&
+          confirm("本当に削除しますか? この操作で下書きが空に戻ります。"))
+        runDeleteAll(cw()).catch((e) => log("ERROR: " + e.message));
     };
   }
 
