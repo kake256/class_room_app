@@ -35,11 +35,14 @@ def clamp_total(run: dict[str, Any]) -> int:
     """1回分の採点結果から確定合計点(0〜3の整数)を導出する。
 
     ゲート不通過は0点。totalは観点和と食い違う場合があるため観点和を優先。
+    四捨五入(0.5は必ず切り上げ)。Python組み込みのround()は銀行丸め
+    (round(0.5)=0, round(2.5)=2)になり、ルーブリックが指示する「四捨五入」と
+    食い違うため使わない。
     """
     if not run.get("gate", {}).get("pass", False):
         return 0
     s = sum(float(c.get("score", 0)) for c in run.get("criteria", []))
-    return max(0, min(3, int(round(s))))
+    return max(0, min(3, int(s + 0.5)))
 
 
 def consolidate(runs: list[dict[str, Any]]) -> dict[str, Any]:

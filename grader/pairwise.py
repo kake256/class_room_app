@@ -22,7 +22,7 @@ from typing import Any
 
 from .config import Config
 from .grade import Grader, _b64_image, consolidate
-from .rubric import CRITERIA_NAMES
+from .rubric import CRITERIA_NAMES, resolve_assignment
 
 log = logging.getLogger(__name__)
 
@@ -35,19 +35,53 @@ PAIRWISE_SCHEMA = {
     "required": ["winner", "reason"],
 }
 
-PAIRWISE_PROMPT = """\
-2つのレポート答案(答案1、答案2)を比較します。どちらも「RandomForestの
-パラメータを変えて識別境界と識別率を調べる」課題の提出物です。
+_PAIRWISE_TAIL = """\
+
+明確な差がなければ tie を選ぶこと。どちらかに肩入れせず厳密に比較すること。
+出力はJSONのみ: winner は "1" / "2" / "tie" のいずれか。"""
+
+# 課題タイプ(rubric種別)ごとの比較軸。ペアワイズは一次3点候補を2点アンカーと
+# 比較して降格判定するため、比較軸が課題と噛み合っていないと誤降格する。
+PAIRWISE_PROMPTS = {
+    "EXPERIMENT": """\
+2つのレポート答案(答案1、答案2)を比較します。どちらも「機械学習の識別器の
+パラメータを変えて識別境界と識別率を調べる」実験課題の提出物です。
 
 次の2つの軸で、総合的にどちらが優れているかを判定してください:
 
 1. 定量的評価: 複数条件の識別率を数値で提示・比較し、最良パラメータを
    識別率とともに明示している充実度
 2. 考察の深さ: 観察の言い換えにとどまらず「なぜそうなるか」の原理
-   (過学習・汎化・アンサンブル等)まで踏み込んでいるか
+   (過学習・汎化・アンサンブル等)まで踏み込んでいるか""" + _PAIRWISE_TAIL,
+    "KANSOU": """\
+2つのレポート答案(答案1、答案2)を比較します。どちらも「講義のまとめと感想」
+または「これまで学んだ機械学習の中で好きな手法とその理由」をまとめる課題の提出物です。
+実験の数値やグラフを求める課題ではありません。
 
-明確な差がなければ tie を選ぶこと。どちらかに肩入れせず厳密に比較すること。
-出力はJSONのみ: winner は "1" / "2" / "tie" のいずれか。"""
+次の3つの軸で、総合的にどちらが優れているかを判定してください:
+
+1. まとめの具体性: 具体的なトピック・技術名・事例に触れて内容をまとめているか
+   (「AIについて学んだ」のような抽象的な言及にとどまっていないか)
+2. 理解の正確さ: 手法や講義内容を自分の言葉で正しく整理・説明できているか
+   (講義資料の丸写しや明らかな誤解でないか)
+3. 感想の深さ: 「面白かった」等の一般的な感想にとどまらず、自分の意見・疑問・
+   今後の学習や将来との結びつけがあるか""" + _PAIRWISE_TAIL,
+    "EFFORT": """\
+2つのレポート答案(答案1、答案2)を比較します。どちらも「これまで学んだ機械学習の
+中で好きな手法とその理由」をまとめる課題の提出物です。取り組み量と概念理解を見ます。
+実験の数値やグラフを求める課題ではありません。
+
+次の3つの軸で、総合的にどちらが優れているかを判定してください:
+
+1. テーマへの言及: 選んだ手法・トピックに具体的に言及しているか
+2. 概念理解: 手法の仕組み・特徴を講義で扱った概念に沿っておおむね正しく説明して
+   いるか(「強そう」等の感覚的な印象や明らかな誤解でないか。平易な説明でよい)
+3. 分量と自分の言葉: 数文以上のまとまった分量で、自分の言葉で理由や考えを
+   述べているか""" + _PAIRWISE_TAIL,
+}
+
+# 後方互換(既定は実験課題)
+PAIRWISE_PROMPT = PAIRWISE_PROMPTS["EXPERIMENT"]
 
 
 def decide_verdict(wins: list[bool]) -> str:
@@ -93,12 +127,18 @@ class PairwiseRefiner:
         self.judge_runs = int(cfg.get("pairwise", "judge_runs", default=2))
         self.anchor_pages_limit = int(cfg.get("pairwise", "anchor_max_pages", default=4))
         self.cand_pages_limit = int(cfg.get("pairwise", "candidate_max_pages", default=6))
+        # 課題タイプに応じた比較軸を選ぶ(噛み合わない軸での誤降格を防ぐ)
+        try:
+            _, rubric_key = resolve_assignment(coursework_id, cfg.get("assignments") or {})
+        except Exception:  # noqa: BLE001 未登録等は実験課題の軸にフォールバック
+            rubric_key = "EXPERIMENT"
+        self.pairwise_prompt = PAIRWISE_PROMPTS.get(rubric_key, PAIRWISE_PROMPTS["EXPERIMENT"])
 
     async def compare_once(
         self, first: list[pathlib.Path], second: list[pathlib.Path]
     ) -> dict[str, Any]:
         """中立ラベルで2答案を比較する。winner: "1"/"2"/"tie"。"""
-        content: list[dict[str, Any]] = [{"type": "text", "text": PAIRWISE_PROMPT}]
+        content: list[dict[str, Any]] = [{"type": "text", "text": self.pairwise_prompt}]
         content.append({"type": "text", "text": "\n=== 答案1 ==="})
         content += [_b64_image(p) for p in first]
         content.append({"type": "text", "text": "\n=== 答案2 ==="})

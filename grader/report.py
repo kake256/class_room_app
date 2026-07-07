@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 from typing import Any
 
+import fitz  # PyMuPDF
 import pandas as pd
 
 from .config import Config
-from .rubric import CRITERIA_NAMES
+from .rubric import COURSE_KEYWORDS, CRITERIA_NAMES, resolve_assignment
 
 REVIEW_FLAGS = {
     "inconsistent",
@@ -30,7 +32,13 @@ def judge_score(result: dict[str, Any]) -> int | None:
 def classify(result: dict[str, Any], crit_prune: float | None = 2.0) -> str:
     """判定区分: auto_0 / auto_1 / auto_2 / candidate_3 / review。
 
-    レビュー行き: ゲート不通過 / 2回不一致 / flagsあり / 形式違反 / 切り捨て / エラー。
+    レビュー行き: ゲート不通過 / 2回不一致 / 形式違反 / 切り捨て / エラー。
+    審判フェーズ未実施(judgeデータなし)の場合のみ、一次採点自身が書いた
+    flags(判断に迷った旨の自由記述)もレビュー行きの根拠にする
+    (クロスチェックする審判モデルがまだいないため保守的に扱う)。
+    審判フェーズ実施済みなら、flagsの自由記述ではなくjudgeとの突き合わせ
+    (下記・build_report側のjudge優先ロジック)に絞り込みを委ねる。
+
     一次採点3点は自動確定せず candidate_3(甘い一次採点を高recallの網として使う)。
     審判フェーズ実施済みなら候補を絞り込む:
     - ペアワイズで両順負け/tie → auto_2 に降格(実測: 降格精度100%)
@@ -41,7 +49,10 @@ def classify(result: dict[str, Any], crit_prune: float | None = 2.0) -> str:
         return "review"
     flags = set(result.get("flags", []))
     score = result.get("final_score", 0)
-    if flags & REVIEW_FLAGS or (flags - {"late", "late_waiver_candidate"}):
+    has_judge = (result.get("judge") or {}).get("status") == "ok"
+    if flags & REVIEW_FLAGS:
+        return "review"
+    if not has_judge and (flags - {"late", "late_waiver_candidate"}):
         return "review"
     if score >= 3:
         verdict = (result.get("pairwise") or {}).get("verdict")
@@ -94,6 +105,76 @@ def apply_late_policy(score: int, late: bool, penalty: int = 1) -> tuple[int, bo
     return max(0, score - penalty), False
 
 
+def _pdf_text(pdf_path: pathlib.Path) -> str:
+    """PDF本文を読み出す。読めなければ空文字(機能を無効化する側に倒す)。"""
+    if not pdf_path.exists():
+        return ""
+    try:
+        doc = fitz.open(pdf_path)
+        text = "".join(page.get_text() for page in doc)
+        doc.close()
+    except Exception:  # noqa: BLE001
+        return ""
+    return text
+
+
+def _char_count(text: str) -> int:
+    """空白を除いた文字数。"""
+    return len(re.sub(r"\s", "", text))
+
+
+def _keyword_hits(text: str) -> int:
+    """講義で扱った技術用語(COURSE_KEYWORDS)のうち本文中に出現する語数。"""
+    return sum(1 for kw in COURSE_KEYWORDS if kw in text)
+
+
+def apply_length_bonus(
+    r: dict[str, Any], cat: str, cfg: Config, coursework_id: str, student_id: str,
+    rubric_key: str | None,
+) -> str:
+    """感想文系課題(KANSOU/EFFORT)の3点候補を「確定/要確認」に仕分ける。
+
+    一次・judgeとも3点で一致している candidate_3 のうち:
+    - judge観点合計(crit_min_sum、2回の低い方)が満点(max_crit_sum)に達している
+      → 厳格モデルが2回とも全観点満点。無条件で「確認済みの3点」(auto_3)に格上げ
+    - crit_min_sumが僅差(min_crit_sum以上・満点未満)の場合のみ、
+      (a)本文が長い(min_chars以上)、または(b)講義の技術用語に複数言及している
+      (min_keyword_hits以上)という「具体性ボーナス」で満点相当まで底上げできれば
+      同様にauto_3へ。どちらも満たさなければ candidate_3 のまま教員確認に回す
+      (実測: 技術用語言及数は 堅い3点で平均6.7語、堅い2点で平均1.9語と判別力を確認済み)
+
+    実験課題(EXPERIMENT)には適用しない。満点(3点)は誤りの影響が大きいため、
+    このボーナスで確定できるのは candidate_3 のみ(review・auto_0/1/2には無関係)。
+    """
+    lb = cfg.get("length_bonus") or {}
+    if not lb.get("enabled") or cat != "candidate_3":
+        return cat
+    if rubric_key not in set(lb.get("rubric_keys", ["KANSOU", "EFFORT"])):
+        return cat
+    crit_sum = (r.get("judge") or {}).get("crit_min_sum")
+    if crit_sum is None:
+        return cat
+    max_crit_sum = float(lb.get("max_crit_sum", 3.0))
+    if crit_sum >= max_crit_sum:
+        # judgeが2回とも全観点満点(最も固い3点)。ボーナス不要でそのまま確定
+        r["flags"] = sorted(set(r.get("flags", [])) | {"judge_full_marks_confirmed"})
+        return "auto_3"
+    min_crit_sum = float(lb.get("min_crit_sum", 2.5))
+    if crit_sum < min_crit_sum:
+        return cat
+    pdf_path = cfg.data_dir / "pdf" / coursework_id / f"{student_id}.pdf"
+    text = _pdf_text(pdf_path)
+    min_chars = int(lb.get("min_chars", 350))
+    min_keyword_hits = int(lb.get("min_keyword_hits", 3))
+    long_enough = _char_count(text) >= min_chars
+    specific_enough = _keyword_hits(text) >= min_keyword_hits
+    if not (long_enough or specific_enough):
+        return cat
+    reason = "length_bonus_confirmed" if long_enough else "keyword_bonus_confirmed"
+    r["flags"] = sorted(set(r.get("flags", [])) | {reason})
+    return "auto_3"
+
+
 def _criterion_scores(run: dict[str, Any]) -> dict[str, Any]:
     by_name = {c.get("name"): c for c in run.get("criteria", [])}
     return {n: by_name.get(n, {}).get("score") for n in CRITERIA_NAMES}
@@ -112,6 +193,10 @@ def build_report(cfg: Config, coursework_id: str) -> pd.DataFrame:
     penalty = int(cfg.get("late_penalty", default=1))
     crit_prune = cfg.get("pairwise", "crit_prune", default=2.0)
     crit_prune = float(crit_prune) if crit_prune is not None else None
+    try:
+        _, rubric_key = resolve_assignment(coursework_id, cfg.get("assignments"))
+    except KeyError:
+        rubric_key = None
     rows = []
     for rp in sorted(results_dir.glob("*.json")):
         r = json.loads(rp.read_text(encoding="utf-8"))
@@ -128,6 +213,8 @@ def build_report(cfg: Config, coursework_id: str) -> pd.DataFrame:
             # 0/1/2の確定点は審判モデルの方が高精度(実測66% vs 36%)
             score = min(js, 2)
             cat = f"auto_{score}"
+        else:
+            cat = apply_length_bonus(r, cat, cfg, coursework_id, sid, rubric_key)
         final_after_late, waiver = apply_late_policy(score, late, penalty)
         if waiver:
             r["flags"] = sorted(set(r.get("flags", [])) | {"late_waiver_candidate"})
@@ -169,8 +256,9 @@ def print_summary(df: pd.DataFrame) -> None:
     """TAが講義中に見るサマリを標準出力に表示。"""
     counts = df["category"].value_counts() if not df.empty else {}
     print("=== 採点サマリ ===")
-    for cat in ["auto_0", "auto_1", "auto_2"]:
-        print(f"自動確定 {cat[-1]}点: {counts.get(cat, 0)}人")
+    for cat in ["auto_0", "auto_1", "auto_2", "auto_3"]:
+        label = "自動確定" if cat != "auto_3" else "自動確定(文章量ボーナス)"
+        print(f"{label} {cat[-1]}点: {counts.get(cat, 0)}人")
     def _label(row) -> str:
         return row.get("name") or row["student_id"]
 

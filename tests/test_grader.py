@@ -66,7 +66,8 @@ def test_clamp_total_gate_fail():
 
 def test_clamp_total_rounding():
     assert clamp_total(_run([0.5, 1, 0])) == 2  # 1.5 → 四捨五入で2
-    assert clamp_total(_run([0.5, 0, 0])) == 0  # 0.5 → 0 (banker's rounding: round(0.5)=0)
+    assert clamp_total(_run([0.5, 0, 0])) == 1  # 0.5 → 四捨五入で1(切り上げ)
+    assert clamp_total(_run([1, 1, 0.5])) == 3  # 2.5 → 四捨五入で3(切り上げ)
     assert clamp_total(_run([1, 1, 1])) == 3
 
 

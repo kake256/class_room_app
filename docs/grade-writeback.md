@@ -143,7 +143,13 @@ docker compose -f docker-compose.yml -f docker-compose.tailscale.yml \
 点数を確信度で2群に分けて扱う(APIの `category` 列で判定):
 
 - **自動返却組 = auto_0(0点)/ auto_2(2点)** … 下書き入力→その生徒だけ選択→「返却」まで自動
-- **下書き組 = auto_1(1点)/ candidate_3(3点候補)/ review** … 下書き入力のみ(教員が目視確認して手動返却)
+- **下書き組 = auto_1(1点)/ auto_3(3点・システム確認済み)/ candidate_3(3点候補・要確認)/ review** …
+  下書き入力のみ(教員が目視確認して手動返却)
+
+`auto_3` は感想文系課題(KANSOU/EFFORT)限定の仕組み(`length_bonus` 設定、`grader/report.py`
+の `apply_length_bonus`)。一次採点・judge(審判モデル)とも3点で一致した候補(candidate_3)を、
+judge観点合計が満点、または僅差でも本文の長さ・専門用語言及数で「確認済み」と判定できた場合に
+自動昇格させる。返却はせず下書きのみ(満点は誤りの影響が大きいため自動返却対象には含めない)。
 
 | ボタン | 動作 |
 |---|---|

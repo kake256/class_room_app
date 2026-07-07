@@ -40,3 +40,18 @@ pairwise:                # 審判フェーズ(refine)
   anchor_student_id: "<基準答案(2点相当)のstudent_id>"   # 課題ごとに選び直す
   anchor_max_pages: 4
   candidate_max_pages: 6
+
+# 感想文系課題(KANSOU/EFFORT)向け。一次・judgeとも3点一致(candidate_3)の答案を
+# 「確定/要確認」に仕分ける。judge観点合計(crit_min_sum、2回の低い方)が
+# max_crit_sum(=満点)に達していれば無条件で確定。満点未満・min_crit_sum以上の
+# 僅差の場合のみ、(a)本文が長い(min_chars以上)、または(b)講義の技術用語
+# (rubric.COURSE_KEYWORDS)に複数言及している(min_keyword_hits以上)答案を
+# 「システムが自動確認済みの3点」(auto_3)に格上げし、教員の目視確認リスト
+# (candidate_3)から外す。実験課題(EXPERIMENT)には適用しない。
+length_bonus:
+  enabled: false
+  rubric_keys: ["KANSOU", "EFFORT"]
+  max_crit_sum: 3.0        # judge観点合計がこれ以上(=2回とも全観点満点)なら無条件で確定
+  min_crit_sum: 2.5        # これ未満は対象外(crit_pruneで既にauto_2降格済みのはず)
+  min_chars: 350           # 満点未満でも本文がこれ以上長ければ確定(具体性ボーナス)
+  min_keyword_hits: 3      # または講義の技術用語への言及数がこれ以上

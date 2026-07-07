@@ -49,6 +49,7 @@ ASSIGNMENT_SPECS = {
     "kansou1": (ASSIGNMENT_KANSOU_1, "KANSOU"),
     "tokubetsu0511": (ASSIGNMENT_TOKUBETSU_0511, "KANSOU"),
     "sukina": (ASSIGNMENT_SUKINA_SHUHO, "EFFORT"),
+    "sukina_kansou": (ASSIGNMENT_SUKINA_SHUHO, "KANSOU"),  # 好きな手法を感想文想定で採点
 }
 
 RUBRIC = """\
@@ -105,6 +106,9 @@ RUBRIC_KANSOU = """\
 2. method = 理解の正確さと構成(1点)
    - 講義内容を自分の言葉で正しく整理・要約している → 1点
    - 講義資料の言葉の書き写し中心、または誤解がある → 0.5点
+   - 手法名やトピック名を挙げているだけで、その仕組み・内容の説明が
+     全くない(「好きだから」「理解しやすかったから」等、理由のみで
+     中身の説明がない場合を含む) → 0点
 
 3. discussion = 感想・自分の考え(1点)
    - 具体的な感想に加え、自分の意見・疑問・今後の学習や将来との
@@ -258,3 +262,16 @@ GRADING_SCHEMA = {
 }
 
 CRITERIA_NAMES = ["quantitative", "method", "discussion"]
+
+# 講義で扱う技術用語(感想文系課題の「具体性」を測る補助指標に使用。report.py参照)。
+# 新しい課題・手法を追加したらここにも追記すること。
+COURSE_KEYWORDS = [
+    "RandomForest", "Random Forest", "ランダムフォレスト", "決定木",
+    "SVM", "サポートベクター", "マージン", "カーネル",
+    "AdaBoost", "アダブースト", "弱識別器", "弱識別機", "強識別器",
+    "kNN", "k近傍", "最近傍", "プロトタイプ法",
+    "HOG", "顔検出", "特徴量", "局所特徴",
+    "Regression Forest", "回帰森",
+    "n_estimators", "max_depth", "パラメータ",
+    "過学習", "汎化", "アンサンブル", "識別境界", "識別率", "交差検定",
+]

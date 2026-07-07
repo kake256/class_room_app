@@ -46,7 +46,9 @@
 
   // 区分の割り当て
   const RETURN_CATS = new Set(["auto_0", "auto_2"]);            // 下書き+自動返却
-  const DRAFT_CATS = new Set(["auto_1", "candidate_3", "review"]); // 下書きのみ
+  // auto_3: 感想文系課題の文章量ボーナスで自動確認済みとなった3点(judge僅差+長文)。
+  // 判定自体は人間が確定していないため、3点は下書きのみに留め自動返却はしない(安全側)
+  const DRAFT_CATS = new Set(["auto_1", "candidate_3", "auto_3", "review"]); // 下書きのみ
   const ALL_CATS = new Set([...RETURN_CATS, ...DRAFT_CATS]);   // 削除・プレビュー対象
 
   // ---- ページDOM依存(壊れたらここを調整) ----
@@ -417,7 +419,7 @@
     previewBtn.onclick = () =>
       runPreview(cw()).catch((e) => log("ERROR: " + e.message));
     draftBtn.onclick = () => {
-      if (confirm("1/3点ほか(auto_1/candidate_3/review)を未返却の全員に下書き入力します(返却しません)。続行しますか?"))
+      if (confirm("1/3点ほか(auto_1/candidate_3/auto_3/review)を未返却の全員に下書き入力します(返却しません)。続行しますか?"))
         runDraftInput(cw(), DRAFT_CATS, "1/3点ほか").catch((e) => log("ERROR: " + e.message));
     };
     draft02Btn.onclick = () => {
