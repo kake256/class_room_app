@@ -21,3 +21,17 @@ tr.risk td { background: #fff7ed; }
 tr.risk td:first-child { font-weight: 600; color: #9a3412; }
 .risk-reasons { color: #9a3412; font-size: 0.85em; margin-bottom: 0.2em; }
 .info-badges { color: #475569; font-size: 0.8em; margin-bottom: 0.2em; }
+
+/* タブ */
+.tabs { display: flex; gap: 0.25rem; border-bottom: 2px solid #e2e8f0; margin: 1rem 0; }
+.tabs .tab {
+  background: none; border: none; border-bottom: 3px solid transparent;
+  padding: 0.6rem 1.1rem; cursor: pointer; font-size: 1rem; color: #475569;
+}
+.tabs .tab:hover { background: #f1f5f9; }
+.tabs .tab.active { color: #0f172a; font-weight: 600; border-bottom-color: #2563eb; }
+
+/* 一番上のクイック操作 */
+.quick-actions { align-items: center; gap: 0.5rem; padding: 0.6rem; background: #f8fafc;
+  border: 1px solid #e2e8f0; border-radius: 6px; }
+.quick-actions select { min-width: 20rem; }

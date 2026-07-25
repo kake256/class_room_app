@@ -1619,3 +1619,35 @@ def test_gateway_allowlist_blocks_bulk_confirm_and_allows_single_review():
     source = inspect.getsource(gateway_app)
     assert "reviews-confirm-all" not in source
     assert "reviews/{_SEGMENT}$" in source
+
+
+def test_web_ui_separates_mcp_and_extension_into_tabs():
+    """MCP連携とChrome拡張機能を採点タブから分離する。"""
+    import pathlib
+
+    html = pathlib.Path("grader/web/index.html").read_text(encoding="utf-8")
+    js = pathlib.Path("grader/web/app.js").read_text(encoding="utf-8")
+    for tab in ("tab-grading", "tab-mcp", "tab-extension"):
+        assert f'id="{tab}"' in html
+    for panel in ("panel-grading", "panel-mcp", "panel-extension"):
+        assert f'id="{panel}"' in html
+    # 既定は採点タブ。MCP/拡張は初期非表示。
+    assert 'id="panel-mcp" role="tabpanel" aria-labelledby="tab-mcp" hidden' in html
+    assert 'id="panel-extension" role="tabpanel" aria-labelledby="tab-extension" hidden' in html
+    # 採点パネルは2ブロックに分かれるため両方を切り替える
+    assert 'grading:["panel-grading","panel-grading-2"]' in js
+
+
+def test_web_ui_offers_top_level_coursework_fetch():
+    """答案取得を各課題カードではなく一番上のクイック操作から行える。"""
+    import pathlib
+
+    html = pathlib.Path("grader/web/index.html").read_text(encoding="utf-8")
+    js = pathlib.Path("grader/web/app.js").read_text(encoding="utf-8")
+    assert 'id="quick-coursework"' in html and 'id="quick-prepare"' in html
+    assert 'id="quick-full"' in html and 'id="courses-refresh"' in html
+    assert "function runQuickJob(phase)" in js
+    assert "function renderQuickCourseworkOptions()" in js
+    # 課題カードからは答案準備ボタンを外している(上部へ集約)
+    cards = js[js.index("const acts=node(\"div\",undefined,\"course-actions\")"):]
+    assert 'startJob(c,"prepare")' not in cards

@@ -22,10 +22,18 @@
     <p class="hint">GoogleログインとClassroom APIへの接続は一度の同意操作で完了します。</p>
   </section>
   <div id="app-content" hidden>
+  <nav class="tabs" role="tablist" aria-label="機能の切り替え">
+    <button id="tab-grading" class="tab" role="tab" aria-controls="panel-grading" aria-selected="true">採点</button>
+    <button id="tab-mcp" class="tab" role="tab" aria-controls="panel-mcp" aria-selected="false">AI連携（MCP）</button>
+    <button id="tab-extension" class="tab" role="tab" aria-controls="panel-extension" aria-selected="false">Chrome拡張機能</button>
+  </nav>
+  <div id="panel-grading" role="tabpanel" aria-labelledby="tab-grading">
   <section><h2>システム状態</h2><div id="status" class="cards"></div>
-    <p class="hint">「AI採点案を作成」は提出物取得、一次採点、再チェック、集計を順に実行し、
-    必要なGPUモデルも安全なコントローラー経由で切り替えます。</p>
+    <p class="hint">「AI採点案を作成」は提出物取得、Qwen2.5による一次採点、集計を順に実行します（標準は1段階採点）。
+    必要なGPUモデルは安全なコントローラー経由で切り替えます。最終確認・確定・返却はClassroomで教員が行います。</p>
   </section>
+  </div>
+  <div id="panel-mcp" role="tabpanel" aria-labelledby="tab-mcp" hidden>
   <section id="mcp-section"><h2>AI連携（MCP）</h2>
     <p class="hint">CodexやClaude Codeから、確認済み採点基準と答案を取得し、採点案をこのWeb UIへ保存できます。
     答案内容はClaude/OpenAI等の外部提供者へ送信されるため、所属組織の情報管理方針を確認してください。
@@ -61,6 +69,8 @@
       <p id="mcp-message" class="hint" role="status"></p><div id="mcp-tokens"></div>
     </details>
   </section>
+  </div>
+  <div id="panel-extension" role="tabpanel" aria-labelledby="tab-extension" hidden>
   <section id="extension-setup"><h2>Chrome拡張機能セットアップ</h2>
     <p><strong>推奨手順: Claudeで採点 → 課題一覧からClassroomへ下書き入力 → Classroomで1クリック。</strong>
     サーバーURLや初回接続コードは新方式では不要です。</p>
@@ -130,10 +140,21 @@
     <p class="safety-note"><strong>安全制約:</strong> 拡張機能は空欄の成績欄だけへ入力します。
     既存点の上書き、返却、確定、送信、削除、チェックボックス操作は行いません。</p>
   </section>
+  </div>
+  <div id="panel-grading-2" role="tabpanel" aria-labelledby="tab-grading">
   <section><h2>担当コースと課題</h2>
     <div class="toolbar"><label>担当コース
       <select id="course-select"><option value="">取得中…</option></select>
-    </label><strong id="selected-course"></strong></div>
+    </label><strong id="selected-course"></strong>
+      <button id="courses-refresh" type="button">課題一覧を再取得</button></div>
+    <div class="toolbar quick-actions">
+      <label>課題
+        <select id="quick-coursework"><option value="">コースを選択してください</option></select>
+      </label>
+      <button id="quick-prepare" type="button">答案を取得</button>
+      <button id="quick-full" type="button">AI採点案を作成</button>
+      <span id="quick-message" class="hint" role="status"></span>
+    </div>
     <div class="toolbar grading-options">
       <label>採点の厳しさ
         <select id="grading-mode">
@@ -187,6 +208,7 @@
       <th>優先</th><th>氏名</th><th>AI採点案</th><th>教員点</th><th>下書き状態</th><th>操作</th><th>根拠・モデル</th>
     </tr></thead><tbody id="result-rows"></tbody></table></div>
   </section>
+  </div>
   </div>
   <dialog id="settings-dialog"><form id="settings-form">
     <h2 id="settings-title">採点基準</h2>
