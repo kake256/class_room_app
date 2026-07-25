@@ -1,6 +1,7 @@
 """採点API(grader/api.py)のテスト。FastAPI TestClientで実データCSVなしに検証。"""
 import asyncio
 import io
+import inspect
 import json
 import fitz
 import pandas as pd
@@ -1531,3 +1532,90 @@ def test_review_timer_starts_on_row_activation_not_on_list_render():
     assert "if(activeReviewStudentId!==null)reviewOpenedAt.delete(activeReviewStudentId);" in source
     assert 'input.addEventListener("focus",()=>activateReview(r.student_id));' in source
     assert 'tr.addEventListener("click",()=>activateReview(r.student_id));' in source
+
+
+def _login_as(client, monkeypatch, role, *, email="admin@example.edu"):
+    """指定ロールでログインする(session_authのロール解決を差し替える)。"""
+    monkeypatch.setattr(api._sessions, "resolve_role", lambda _email: role)
+    monkeypatch.setattr(api._sessions, "authorize", lambda _email: None)
+    return login(client, sub=f"subject-{role}", email=email)
+
+
+def test_bulk_confirm_requires_admin_role(client, monkeypatch):
+    """一般graderは403。管理者だけが到達できる。"""
+    csrf = _login_as(client, monkeypatch, "grader", email="grader@example.edu")
+    monkeypatch.setenv("CGA_ALLOW_BULK_REVIEW_CONFIRM", "1")
+    response = client.post(
+        "/api/v1/courses/200000000001/courseworks/100000000001/reviews-confirm-all",
+        headers={"X-CSRF-Token": csrf},
+        json={"confirm": True, "expected_count": 1,
+              "settings_fingerprint": "x", "reason": "監査用の理由テキスト"})
+    assert response.status_code == 403
+
+
+def test_bulk_confirm_is_disabled_by_default_even_for_admin(client, monkeypatch):
+    """既定(環境変数なし)では管理者でも409で拒否する。"""
+    csrf = _login_as(client, monkeypatch, "admin")
+    monkeypatch.delenv("CGA_ALLOW_BULK_REVIEW_CONFIRM", raising=False)
+    response = client.post(
+        "/api/v1/courses/200000000001/courseworks/100000000001/reviews-confirm-all",
+        headers={"X-CSRF-Token": csrf},
+        json={"confirm": True, "expected_count": 1,
+              "settings_fingerprint": "x", "reason": "監査用の理由テキスト"})
+    assert response.status_code == 409
+    assert "無効" in response.json()["detail"]
+
+
+def test_bulk_confirm_validates_confirm_reason_fingerprint_and_count(client, monkeypatch, tmp_path):
+    """confirm・reason・fingerprint・expected_countの全てを検証し、監査へ残す。"""
+    csrf = _login_as(client, monkeypatch, "admin")
+    monkeypatch.setenv("CGA_ALLOW_BULK_REVIEW_CONFIRM", "1")
+    url = "/api/v1/courses/200000000001/courseworks/100000000001/reviews-confirm-all"
+    headers = {"X-CSRF-Token": csrf}
+    base = {"confirm": True, "expected_count": 2,
+            "settings_fingerprint": "x", "reason": "監査用の理由テキスト"}
+
+    # confirm=false は400
+    assert client.post(url, headers=headers, json={**base, "confirm": False}).status_code == 400
+    # reasonが短すぎると400
+    assert client.post(url, headers=headers, json={**base, "reason": "短い"}).status_code == 400
+    # fingerprint不一致は409(この課題には確認済み設定がないため必ず不一致)
+    mismatch = client.post(url, headers=headers, json=base)
+    assert mismatch.status_code == 409
+    assert "fingerprint" in mismatch.json()["detail"]
+
+    # 確認済み設定を用意してfingerprintを一致させ、件数不一致を検証する
+    from grader.course_settings import save_settings, settings_fingerprint
+
+    settings = {
+        "notes": "rubric", "levels": {str(i): f"level {i}" for i in range(4)},
+        "score_mapping": {"0": 0, "1": 3, "2": 7, "3": 10},
+        "late_penalty": 0, "confirmed": True, "max_points": 10,
+    }
+    saved = save_settings(api._cfg, "200000000001", "100000000001", settings, max_points=10.0,
+                          actor_ref="a" * 64)
+    fingerprint = settings_fingerprint(saved)
+    wrong_count = client.post(url, headers=headers, json={
+        **base, "settings_fingerprint": fingerprint, "expected_count": 999})
+    assert wrong_count.status_code == 409
+    assert "expected_count" in wrong_count.json()["detail"]
+
+    # 監査ログへ拒否理由が残る(答案本文・学生名は含まない)
+    audit_lines = (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    outcomes = [json.loads(line)["outcome"] for line in audit_lines
+                if json.loads(line)["action"] == "review.confirm_all"]
+    assert "rejected:fingerprint" in outcomes and "rejected:count" in outcomes
+
+
+def test_gateway_allowlist_blocks_bulk_confirm_and_allows_single_review():
+    """公開gateway経由では一括確認を通さず、個別レビューは通す。
+
+    gatewayソースがimageに含まれない環境ではスキップする。
+    """
+    try:
+        import gateway.app as gateway_app
+    except ModuleNotFoundError:
+        pytest.skip("gateway module is not part of this image")
+    source = inspect.getsource(gateway_app)
+    assert "reviews-confirm-all" not in source
+    assert "reviews/{_SEGMENT}$" in source

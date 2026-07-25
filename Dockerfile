@@ -15,6 +15,8 @@ COPY scripts/ scripts/
 COPY extension/manifest.json extension/background.js extension/content.js extension/bridge.js \
      extension/core.js extension/selectors.js extension/options.html \
      extension/options.js extension/README.md extension/
+# gatewayの公開allowlistをテストで検証するため、ソースだけをimageへ配置する。
+COPY gateway/__init__.py gateway/app.py gateway/agent.py gateway/
 COPY tests/ tests/
 # 既定として example を config.yaml として同梱。実運用は compose の volume で
 # 本物の config.yaml を上書きマウントする(config.yaml は gitignore 対象)

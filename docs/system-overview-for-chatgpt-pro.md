@@ -408,11 +408,32 @@ Web UIでは`q25_visual_max_score`として次の条件で実装した。
 教員確認時には監査用に次を保存する（`TeacherReviewStore.save`）。点数の自動補正・ルーティングには使用しない。
 
 ```text
-ai_proposal_score   AI提案点
-score_changed       教員が点数を変更したか
-score_delta         変更幅
-signals_at_review   確認時に表示されていた注意シグナル（q25_visual_max_score等）
+ai_proposal_score        AI提案点
+score_changed            教員が点数を変更したか
+score_delta              変更幅
+signals_at_review        確認時に表示されていた注意シグナル（q25_visual_max_score等）
+review_started_at        その答案行をアクティブ化した時刻
+review_completed_at      確認を保存した時刻
+review_duration_seconds  上記の差（Web UI上のactive時間）
 ```
+
+#### `review_duration_seconds`の意味と限界
+
+**`review_duration_seconds`はWeb UI上でその答案行がアクティブだった時間であり、Classroomを含む全確認時間ではない。**
+
+- 計測開始は、一覧の描画時ではなく**教員がその行をアクティブ化した時点**（点数欄へフォーカス、または行をクリック）である。一覧描画時に全行へ一括設定すると「一覧を開いてからの経過時間」になり実際の確認時間にならないため、この方式へ修正した。
+- 同時に進行するタイマーは常に1件だけである。別の行をアクティブ化すると直前の行の計測は破棄される。
+- 次に含まれない: Classroom画面で答案PDFを読んだ時間、Classroom上での確定・返却操作、ブラウザを離れていた時間、Web UIを開く前の準備時間。
+- 異常値（未来時刻、8時間超）は所要時間として採用しない。
+
+したがって実測時は**wall-clock時間とWeb UI active時間を分けて報告する**。次回の実課題評価では、全件確認の開始・終了時刻を別途記録し、次の2つを併記する。
+
+| 指標 | 取得元 |
+|---|---|
+| wall-clock全確認時間 | 全件確認の開始・終了時刻（別途記録） |
+| Web UI active時間の合計 | `review_duration_seconds`の合計 |
+
+両者の差はClassroom上での作業時間・中断時間を含むため、AI採点時間との比較には**wall-clock時間**を使う。`review_duration_seconds`は答案ごとの相対的な負荷（どのシグナルの答案に時間がかかるか）の分析に使う。
 
 用途は次に限定する。
 
