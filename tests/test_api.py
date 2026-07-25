@@ -1790,10 +1790,10 @@ def test_ranking_ui_separates_summary_from_per_coursework_scores():
 
     html = pathlib.Path("grader/web/index.html").read_text(encoding="utf-8")
     js = pathlib.Path("grader/web/app.js").read_text(encoding="utf-8")
-    # 内訳と最高点者はサブタブで切り替える
+    # ランキング表示は4つのサブタブで切り替える
     assert 'id="ranking-detail"' in html and 'id="ranking-detail-head"' in html
-    assert 'id="subtab-breakdown"' in html and 'id="subtab-top"' in html
-    assert 'id="subpanel-breakdown"' in html and 'id="subpanel-top"' in html
+    for name in ("ranking", "top", "zero", "breakdown"):
+        assert f'id="subtab-{name}"' in html and f'id="subpanel-{name}"' in html
     # 集計表の列
     for label in ("課題の平均点", "最高点回数", "提出数", "未提出数", "未確定数"):
         assert label in js
@@ -1900,8 +1900,13 @@ def test_web_ui_collapses_coursework_list_and_shows_top_scorers():
     assert 'id="top-scorers"' in html and 'id="answer-dialog"' in html
     # 点数内訳と最高点者はタブで切り替える(既定は内訳)
     assert "function selectRankingSubtab(name)" in js
-    assert 'RANKING_SUBPANELS={breakdown:"subpanel-breakdown",top:"subpanel-top"}' in js
-    assert 'id="subtab-breakdown" class="subtab active"' in html
+    assert 'ranking:"subpanel-ranking"' in js and 'zero:"subpanel-zero"' in js
+    # 既定はランキング
+    assert 'id="subtab-ranking" class="subtab active"' in html
+    # 0点・未提出はランキング取得結果から組み立てる(追加のAPI呼び出しをしない)
+    assert "function renderZeroAndMissing()" in js
+    assert 'row.not_submitted?.[c.coursework_id]' in js
+    assert "row.scores[c.coursework_id]===0" in js
     # 最高点者タブを開いたときに初回だけ取得する
     assert 'if(name==="top"&&!topScorersLoaded&&selectedCourseId)loadTopScorers();' in js
     assert "async function loadTopScorers(" in js

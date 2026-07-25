@@ -336,6 +336,7 @@ async function loadRanking(forceRefresh=false){
     detailHead.replaceChildren();detailBody.replaceChildren();
     if(!d.rows.length){
       $("ranking-wrap").hidden=true;$("ranking-detail").hidden=true;
+      lastRanking=null;renderZeroAndMissing();
       message.textContent="確定済み成績はまだありません。Classroomで点数を確定するか、"
         +"採点結果画面で「点数を修正」して確認済みにすると集計されます。";
       return;
@@ -384,6 +385,8 @@ async function loadRanking(forceRefresh=false){
       detailBody.append(line);
     }
     $("ranking-detail").hidden=false;
+    lastRanking=d;
+    renderZeroAndMissing();
     const cacheNote=d.cached
       ?`（${Math.round(d.cache_age_seconds)}秒前の集計を再利用。最新にするには「ランキングを更新」）`:"";
     message.textContent=`${d.rows.length}名 / ${d.courseworks.length}課題`
@@ -393,10 +396,12 @@ async function loadRanking(forceRefresh=false){
   }
 }
 
-// ランキング下のサブタブ(点数内訳 / 最高点者)を切り替える。
-const RANKING_SUBPANELS={breakdown:"subpanel-breakdown",top:"subpanel-top"};
+// ランキング表示の切り替え(ランキング / 最高点者 / 0点・未提出 / 各回の詳細)。
+const RANKING_SUBPANELS={ranking:"subpanel-ranking",top:"subpanel-top",
+                         zero:"subpanel-zero",breakdown:"subpanel-breakdown"};
 let topScorersLoaded=false;
 function selectRankingSubtab(name){
+  if(!RANKING_SUBPANELS[name])name="ranking";
   for(const [key,panelId] of Object.entries(RANKING_SUBPANELS)){
     const active=key===name;
     const tab=$(`subtab-${key}`),panel=$(panelId);
@@ -406,6 +411,53 @@ function selectRankingSubtab(name){
   try{localStorage.setItem("cga-ranking-subtab",name)}catch{}
   // 最高点者は開いたときに初回だけ取得する(無駄な集計を避ける)
   if(name==="top"&&!topScorersLoaded&&selectedCourseId)loadTopScorers();
+}
+
+// 0点・未提出者はランキング取得結果から組み立てる(追加のAPI呼び出しをしない)。
+let lastRanking=null;
+function renderZeroAndMissing(){
+  const message=$("zero-message"),root=$("zero-list");
+  root.replaceChildren();
+  if(!lastRanking){message.textContent="ランキングを更新すると表示されます。";return}
+  const {courseworks,rows}=lastRanking;
+  let flagged=0;
+  for(const c of courseworks){
+    const zero=[],missing=[];
+    for(const row of rows){
+      if(row.not_submitted?.[c.coursework_id])missing.push(row);
+      else if(row.scores[c.coursework_id]===0)zero.push(row);
+    }
+    if(!zero.length&&!missing.length)continue;
+    flagged++;
+    const box=node("article",undefined,"course");
+    const cap=c.max_points?` / ${c.max_points}点`:"";
+    box.append(node("strong",`${c.title||c.coursework_id}${cap}`));
+    box.append(node("div",`0点 ${zero.length}名 / 未提出 ${missing.length}名`));
+    if(zero.length){
+      const line=node("div",undefined,"course-actions");
+      line.append(node("span","0点：","zero-label"));
+      for(const row of zero){
+        const button=node("button",row.name);
+        button.title="答案を開いて内容を確認します";
+        button.addEventListener("click",()=>openAnswer(
+          c.coursework_id,c.title||c.coursework_id,
+          {student_id:row.student_id,name:row.name,score:0}));
+        line.append(button);
+      }
+      box.append(line);
+    }
+    if(missing.length){
+      const line=node("div",undefined,"course-actions");
+      line.append(node("span","未提出：","zero-label"));
+      // 未提出は答案が無いので名前だけを出す
+      for(const row of missing)line.append(node("span",row.name,"missing-name"));
+      box.append(line);
+    }
+    root.append(box);
+  }
+  message.textContent=flagged
+    ?`${flagged}課題で0点または未提出があります。`
+    :"0点・未提出の学生はいません。";
 }
 
 // 各課題の最高点取得者。ランキングと同じキャッシュを使う。
@@ -548,4 +600,4 @@ $("mcp-create").addEventListener("click",createMcpToken);$("mcp-copy").addEventL
 $("settings-form").addEventListener("submit",saveSettings);
 $("template-select").addEventListener("change",updateTemplateButtons);$("template-create").addEventListener("click",createTemplate);$("template-apply").addEventListener("click",applyTemplate);$("template-rename").addEventListener("click",renameTemplate);$("template-delete").addEventListener("click",deleteTemplate);
 $("ranking-spreadsheet").value=localStorage.getItem("cga-ranking-spreadsheet")||"";$("ranking-sheet").value=localStorage.getItem("cga-ranking-sheet")||"ランキング";$("ranking-range").value=localStorage.getItem("cga-ranking-range")||"A1:Z1000";
-$("google-login").addEventListener("click",connectGoogle);$("google-reconnect").addEventListener("click",connectGoogle);$("logout").addEventListener("click",logout);$("course-select").addEventListener("change",async()=>{topScorersLoaded=false;await loadCourseworks();await loadRanking();if(!$("subpanel-top").hidden)await loadTopScorers()});$("ranking-refresh").addEventListener("click",()=>loadRanking(true));$("top-scorers-refresh").addEventListener("click",()=>loadTopScorers(true));$("subtab-breakdown").addEventListener("click",()=>selectRankingSubtab("breakdown"));$("subtab-top").addEventListener("click",()=>selectRankingSubtab("top"));$("answer-close").addEventListener("click",()=>$("answer-dialog").close());$("answer-prev").addEventListener("click",()=>stepAnswer(-1));$("answer-next").addEventListener("click",()=>stepAnswer(1));$("ranking-export").addEventListener("click",exportRanking);$("tab-grading").addEventListener("click",()=>selectTab("grading"));$("tab-mcp").addEventListener("click",()=>selectTab("mcp"));$("tab-extension").addEventListener("click",()=>selectTab("extension"));$("tab-jobs").addEventListener("click",()=>selectTab("jobs"));$("preset-apply").addEventListener("click",applyPreset);$("dialog-preset-load").addEventListener("click",loadDialogPreset);$("quick-coursework").addEventListener("change",syncQuickButtons);$("preset-select").addEventListener("change",syncQuickButtons);$("preset-all").addEventListener("change",syncQuickButtons);$("courses-refresh").addEventListener("click",loadCourseworks);$("quick-prepare").addEventListener("click",()=>runQuickJob("prepare"));$("quick-full").addEventListener("click",()=>runQuickJob("full"));$("search").addEventListener("input",renderRows);$("risk-only").addEventListener("change",renderRows);$("draft-preview").addEventListener("click",previewDraft);$("draft-transfer").addEventListener("click",transferDraft);$("draft-create").addEventListener("click",createDraft);$("csv").addEventListener("click",downloadCsv);window.addEventListener("message",e=>{if(e.origin!==location.origin||e.data?.type!=="classroom-oauth")return;notice=e.data.result==="success"?"Google Classroomに接続しました。":(e.data.message||"Google認証に失敗しました。");refresh()});selectTab(localStorage.getItem("cga-active-tab")||"grading");selectRankingSubtab(localStorage.getItem("cga-ranking-subtab")||"breakdown");handleOAuthReturn();refresh();loadPresets().then(syncQuickButtons);
+$("google-login").addEventListener("click",connectGoogle);$("google-reconnect").addEventListener("click",connectGoogle);$("logout").addEventListener("click",logout);$("course-select").addEventListener("change",async()=>{topScorersLoaded=false;await loadCourseworks();await loadRanking();if(!$("subpanel-top").hidden)await loadTopScorers()});$("ranking-refresh").addEventListener("click",()=>loadRanking(true));$("top-scorers-refresh").addEventListener("click",()=>loadTopScorers(true));$("subtab-ranking").addEventListener("click",()=>selectRankingSubtab("ranking"));$("subtab-top").addEventListener("click",()=>selectRankingSubtab("top"));$("subtab-zero").addEventListener("click",()=>selectRankingSubtab("zero"));$("subtab-breakdown").addEventListener("click",()=>selectRankingSubtab("breakdown"));$("answer-close").addEventListener("click",()=>$("answer-dialog").close());$("answer-prev").addEventListener("click",()=>stepAnswer(-1));$("answer-next").addEventListener("click",()=>stepAnswer(1));$("ranking-export").addEventListener("click",exportRanking);$("tab-grading").addEventListener("click",()=>selectTab("grading"));$("tab-mcp").addEventListener("click",()=>selectTab("mcp"));$("tab-extension").addEventListener("click",()=>selectTab("extension"));$("tab-jobs").addEventListener("click",()=>selectTab("jobs"));$("preset-apply").addEventListener("click",applyPreset);$("dialog-preset-load").addEventListener("click",loadDialogPreset);$("quick-coursework").addEventListener("change",syncQuickButtons);$("preset-select").addEventListener("change",syncQuickButtons);$("preset-all").addEventListener("change",syncQuickButtons);$("courses-refresh").addEventListener("click",loadCourseworks);$("quick-prepare").addEventListener("click",()=>runQuickJob("prepare"));$("quick-full").addEventListener("click",()=>runQuickJob("full"));$("search").addEventListener("input",renderRows);$("risk-only").addEventListener("change",renderRows);$("draft-preview").addEventListener("click",previewDraft);$("draft-transfer").addEventListener("click",transferDraft);$("draft-create").addEventListener("click",createDraft);$("csv").addEventListener("click",downloadCsv);window.addEventListener("message",e=>{if(e.origin!==location.origin||e.data?.type!=="classroom-oauth")return;notice=e.data.result==="success"?"Google Classroomに接続しました。":(e.data.message||"Google認証に失敗しました。");refresh()});selectTab(localStorage.getItem("cga-active-tab")||"grading");selectRankingSubtab(localStorage.getItem("cga-ranking-subtab")||"ranking");handleOAuthReturn();refresh();loadPresets().then(syncQuickButtons);

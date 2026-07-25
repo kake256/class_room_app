@@ -203,18 +203,18 @@
       <label>出力範囲 <input id="ranking-range" type="text" value="A1:Z1000"></label>
       <button id="ranking-export" type="button">Google Sheetsへ出力</button></div>
     <p id="ranking-message" class="hint" role="status"></p>
-    <nav class="subtabs" role="tablist" aria-label="ランキングの詳細表示">
-      <button id="subtab-breakdown" class="subtab active" role="tab"
-        aria-controls="subpanel-breakdown" aria-selected="true">課題ごとの点数内訳</button>
+    <nav class="subtabs" role="tablist" aria-label="ランキングの表示切り替え">
+      <button id="subtab-ranking" class="subtab active" role="tab"
+        aria-controls="subpanel-ranking" aria-selected="true">ランキング</button>
       <button id="subtab-top" class="subtab" role="tab"
         aria-controls="subpanel-top" aria-selected="false">各回の最高点者</button>
+      <button id="subtab-zero" class="subtab" role="tab"
+        aria-controls="subpanel-zero" aria-selected="false">各回の0点＆未提出者</button>
+      <button id="subtab-breakdown" class="subtab" role="tab"
+        aria-controls="subpanel-breakdown" aria-selected="false">各回の詳細</button>
     </nav>
-    <div id="subpanel-breakdown" role="tabpanel" aria-labelledby="subtab-breakdown">
-      <p class="hint">「−1」は未提出（ペナルティ対象）、「—」は提出済みだが確定点がまだない課題です。
-      課題名は省略表示されます（カーソルを合わせると全文が出ます）。</p>
-      <div id="ranking-detail" class="table-wrap" hidden>
-        <table class="ranking-table"><thead id="ranking-detail-head"></thead>
-          <tbody id="ranking-detail-rows"></tbody></table></div>
+    <div id="subpanel-ranking" role="tabpanel" aria-labelledby="subtab-ranking">
+      <div id="ranking-wrap" class="table-wrap" hidden><table class="ranking-table"><thead id="ranking-head"></thead><tbody id="ranking-rows"></tbody></table></div>
     </div>
     <div id="subpanel-top" role="tabpanel" aria-labelledby="subtab-top" hidden>
       <p class="hint">課題ごとの最高点と、その点を取った学生です（同点は全員）。確定済みの点だけが対象です。
@@ -223,7 +223,21 @@
       <p id="top-scorers-message" class="hint" role="status"></p>
       <div id="top-scorers"></div>
     </div>
-    <div id="ranking-wrap" class="table-wrap" hidden><table class="ranking-table"><thead id="ranking-head"></thead><tbody id="ranking-rows"></tbody></table></div>
+    <div id="subpanel-zero" role="tabpanel" aria-labelledby="subtab-zero" hidden>
+      <p class="hint">課題ごとに、確定点が0点だった学生と未提出の学生を分けて表示します。
+      氏名を押すと答案を開けます（未提出の学生は答案がありません）。
+      提出済みで未確定の学生はどちらにも含めません。</p>
+      <p id="zero-message" class="hint" role="status"></p>
+      <div id="zero-list"></div>
+    </div>
+    <div id="subpanel-breakdown" role="tabpanel" aria-labelledby="subtab-breakdown" hidden>
+      <p class="hint">全学生 × 全課題の点数一覧です。
+      「−1」は未提出（ペナルティ対象）、「—」は提出済みだが確定点がまだない課題です。
+      課題名は省略表示されます（カーソルを合わせると全文が出ます）。</p>
+      <div id="ranking-detail" class="table-wrap" hidden>
+        <table class="ranking-table"><thead id="ranking-detail-head"></thead>
+          <tbody id="ranking-detail-rows"></tbody></table></div>
+    </div>
   </section>
   <dialog id="answer-dialog">
     <h2 id="answer-title">答案</h2>
