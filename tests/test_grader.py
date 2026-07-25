@@ -6,7 +6,8 @@ import pytest
 
 from grader.grade import clamp_total, consolidate
 from grader.render import render_pdf
-from grader.report import apply_late_policy, classify
+from grader.report import apply_late_policy, apply_length_bonus, classify
+from grader.config import Config
 
 
 def _run(scores, gate=True, flags=None):
@@ -242,14 +243,28 @@ def test_resolve_assignment():
         resolve_assignment("333333333333", {"333333333333": "bogus"})  # 未定義キー
 
 
+@pytest.mark.parametrize("key,rubric", [
+    ("ai_kansou", "KANSOU"), ("application_research", "RESEARCH"),
+    ("distance", "DISTANCE"), ("knn", "KNN"),  # 2026-07-17 専用ルーブリック化に追従
+    ("face_detection", "OBSERVATION"),
+])
+def test_historical_assignment_specs(key, rubric):
+    from grader.rubric import ASSIGNMENT_SPECS, build_user_prompt
+    text, actual = ASSIGNMENT_SPECS[key]
+    assert actual == rubric
+    prompt = build_user_prompt(text, actual, lenient=(actual == "KANSOU"))
+    assert text in prompt and "ゲート条件" in prompt
+
+
 def test_map_score_scales():
-    from grader.push import map_score
+    from grader.push import AUTO_CATEGORIES, map_score
 
     assert map_score(2, 3) == 2                      # 3点満点はそのまま
     assert [map_score(s, 100) for s in range(4)] == [70, 75, 80, 85]
     import pytest
     with pytest.raises(SystemExit):
         map_score(2, 5)                              # 未対応スケールは中止
+    assert AUTO_CATEGORIES == {"auto_0", "auto_1", "auto_2", "auto_3"}
 
 
 def test_build_user_prompt_effort():
@@ -263,3 +278,47 @@ def test_build_user_prompt_effort():
     assert "{stance}" not in p
     p2 = build_user_prompt(text, key, lenient=True)
     assert "取り組み量" in p2
+
+
+# ---- auto_3 / length bonus ----
+
+def _bonus_result(crit_sum=3.0):
+    return {"status": "ok", "final_score": 3, "flags": [], "runs": [],
+            "judge": {"status": "ok", "runs": [1], "final_score": 3,
+                      "crit_min_sum": crit_sum}}
+
+
+def _bonus_cfg(tmp_path, **overrides):
+    lb = {"enabled": True, "rubric_keys": ["KANSOU", "EFFORT"],
+          "max_crit_sum": 3.0, "min_crit_sum": 2.5,
+          "min_chars": 10, "min_keyword_hits": 2}
+    lb.update(overrides)
+    return Config({"paths": {"data_dir": str(tmp_path)}, "length_bonus": lb})
+
+
+def test_length_bonus_disabled(tmp_path):
+    cfg = _bonus_cfg(tmp_path, enabled=False)
+    assert apply_length_bonus(_bonus_result(), "candidate_3", cfg, "1", "s", "KANSOU") == "candidate_3"
+
+
+def test_length_bonus_outside_rubric(tmp_path):
+    cfg = _bonus_cfg(tmp_path)
+    assert apply_length_bonus(_bonus_result(), "candidate_3", cfg, "1", "s", "EXPERIMENT") == "candidate_3"
+
+
+def test_length_bonus_judge_full_marks(tmp_path):
+    r = _bonus_result()
+    cat = apply_length_bonus(r, "candidate_3", _bonus_cfg(tmp_path), "1", "s", "KANSOU")
+    assert cat == "auto_3" and "judge_full_marks_confirmed" in r["flags"]
+
+
+@pytest.mark.parametrize("text,flag", [
+    ("十分に長い具体的な感想文です", "length_bonus_confirmed"),
+    ("SVMとランダムフォレスト", "keyword_bonus_confirmed"),
+])
+def test_length_or_keyword_bonus(tmp_path, monkeypatch, text, flag):
+    monkeypatch.setattr("grader.report._pdf_text", lambda _: text)
+    r = _bonus_result(2.5)
+    cfg = _bonus_cfg(tmp_path, min_chars=10 if flag.startswith("length") else 100)
+    cat = apply_length_bonus(r, "candidate_3", cfg, "1", "s", "KANSOU")
+    assert cat == "auto_3" and flag in r["flags"]

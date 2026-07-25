@@ -1,0 +1,12 @@
+FROM python:3.12.8-alpine3.21
+
+RUN apk add --no-cache bash curl docker-cli=27.3.1-r5 \
+    && python -m venv /opt/controller-venv \
+    && /opt/controller-venv/bin/pip install --no-cache-dir \
+       fastapi==0.115.6 pydantic==2.10.5 uvicorn==0.34.0
+
+WORKDIR /app
+COPY scripts/model-controller.py scripts/model-controller.py
+COPY scripts/vllm-server.sh scripts/vllm-server.sh
+
+ENTRYPOINT ["/opt/controller-venv/bin/python", "scripts/model-controller.py"]

@@ -2,15 +2,20 @@
 
 Google Classroom の提出レポート(PDF / Googleドキュメント / Word)を、ローカルGPU上の
 VLM(vLLM + Qwen-VL)でマルチモーダル採点する半自動システム。
-0〜2点は自動確定、3点は「候補」としてTAが目視確定する。**採点処理はすべてDockerで
+全答案についてAIが採点案を作り、教員がWeb UIで確認・修正してからClassroomへ下書き入力する。**採点処理はすべてDockerで
 実行し、ホスト環境を汚さない**(GPUを使うのは vLLM コンテナのみ)。
+
+> **現在のMVP運用:** report内部の旧category名にかかわらず、AI出力はすべて「採点案」である。
+> Web UIで教員が全答案を確認・修正した後、確認済みだけの短期バッチをMV3拡張でClassroomの
+> 空欄へ下書き入力する。自動確定・自動返却は行わず、最終確定と返却は教員がClassroomで行う。
+> 詳細は [docs/teacher-review-workflow.md](docs/teacher-review-workflow.md) を参照。
 
 ## 何をするか
 
 - 提出物を取得 → PDF化 → ページ画像化 → VLMで2回採点 → 集計
 - **2段階のハイブリッド採点**で「3点候補の見逃しゼロ」と「候補の絞り込み」を両立
 - 遅延・形式違反・未提出を自動仕分け、根拠(evidence)付きで出力
-- 成績の書き戻しは「採点API + ブラウザのユーザースクリプト」でログイン済みブラウザから入力
+- 成績の下書き入力は「採点API + 専用Chrome/Edge MV3拡張」でログイン済みブラウザから行う
 
 ## アーキテクチャ
 
@@ -43,7 +48,7 @@ cp config.example.yaml config.yaml     # 実値を記入(このファイルは g
 
 | 項目 | 説明 |
 |---|---|
-| `classroom.course_id` | 対象コースID(Classroom URLの `/c/` の後ろ。Base64形式でも可) |
+| `classroom.course_id` | CLI単独利用時の既定コースID（Web UIは担当コースから選択） |
 | `assignments` | courseWorkId → 課題キー の対応(下記) |
 | `vllm.model` | 一次採点モデル(既定 Qwen2.5-VL-7B) |
 | `pairwise.model` | 審判モデル(既定 Qwen3-VL-8B-FP8) |
@@ -51,23 +56,50 @@ cp config.example.yaml config.yaml     # 実値を記入(このファイルは g
 | `pairwise.crit_prune` | 審判の観点合計がこの値未満の候補を降格(既定2.0) |
 | `length_bonus` | 感想文系課題(KANSOU/EFFORT)の3点候補を自動確認する仕組み(下記) |
 | `late_penalty` | 遅延減点(既定1) |
-| `api.token` | 設定すると採点APIが `X-API-Key` 必須になる |
+| `web_auth.allowed_emails / allowed_domains` | Web UIへのGoogleログイン許可リスト |
+| `web_auth.session_ttl_seconds` | Webログインの有効期間（既定12時間） |
+| `integration.token` | legacyユーザースクリプト互換用。現行MV3拡張は短期バッチのペアリングコードを使う |
 
-### 2. Classroom API 認証(初回1回のみ)
+### 2. Classroom API 認証（Web UIから接続）
 
-1. Google Cloud Console で OAuth クライアント(デスクトップ)を作成し、
-   `credentials.json` をプロジェクト直下に置く
-2. `touch token.json` してから `run.sh` の任意コマンドを実行すると認証URLが出る
-3. ブラウザで開いて許可 → `token.json` に保存(以後は自動更新)
+管理者が一度だけGoogle Cloud ConsoleでClassroom APIとDrive APIを有効化し、OAuthクライアントを
+作成して、ダウンロードしたJSONをプロジェクト直下の`credentials.json`へ配置する。その後の
+利用者操作はWeb UIで完結する。
 
-スコープ: `classroom.coursework.students`(下書き点書き込みに必要) /
+1. `docker compose up -d api`でWeb UIを起動する
+2. `http://localhost:8800/ui/`を開く（遠隔サーバーの場合は8800番をSSH転送する）
+3. 「Googleでログイン」を押す
+4. Googleの同意画面で許可する。完了すると担当コース一覧が出る
+5. 担当コースを選び、そのコースの課題だけを表示・採点する
+
+認証URLのコピーや8765番ポートの転送は不要。Web UIのトークンは
+`data/oauth_tokens/`にGoogle identity `sub`のSHA-256ハッシュ名で利用者ごとに分離し、
+`0600`で原子的に保存する。メールアドレスやraw `sub`はファイル名・ジョブ・APIに保存しない。
+`classroom.token_file` (`token.json`)はCLI単独利用の後方互換として残り、Webログインでは上書きしない。
+
+既存のデスクトップアプリ（`installed`）型OAuthクライアントは、既定のloopback URL
+`http://localhost:8800/oauth2callback`を利用できる。Webアプリ（`web`）型クライアントを使う場合は、
+Google Cloud Consoleの「承認済みのリダイレクトURI」にこのURL（または
+`classroom.oauth_redirect_uri`の設定値）を**完全一致**で登録する。`redirect_uri_mismatch`が出た場合は、
+スキーム、ホスト、ポート、パス、末尾スラッシュまで一致しているか確認する。
+
+スコープ: `openid` / `userinfo.email`（Web UIログインの本人確認） /
+`classroom.courses.readonly`（教師の担当コース一覧） /
+`classroom.coursework.students`(下書き点書き込みに必要) /
 `rosters.readonly` / `drive.readonly`
 
-**VSCode Remote-SSH の場合**: 出てきた認証URLを Ctrl+クリックで手元ブラウザで許可。
-VSCodeがポート8765を自動転送する(届かなければ「ポート」タブで8765を手動追加)。
+担当コースはClassroom API `courses.list` を `teacherId="me"` および
+`courseStates=["ACTIVE"]` でページング取得する。サーバーは課題一覧取得と採点ジョブ開始のたびに
+選択コースがこの一覧内にあることを再確認し、ブラウザの`localStorage`だけを信頼しない。
 
-**素のSSH の場合**: 手元PCで `ssh -L 8765:localhost:8765 <user>@<host>` してから認証URLを開く。
-`run.sh` が接続形態を検知して手順を表示する。
+GoogleのID tokenは公式ライブラリでクライアントID・発行元・有効期限を検証し、確認済みメールだけを
+受け付ける。`web_auth.allowed_emails`または`allowed_domains`を設定すると一致する利用者だけがログイン
+できる。両方空の場合はOAuthクライアント側で許可されたGoogleユーザーを許可するため、共有環境では
+allowlistを設定する。Webセッションは署名済みHttpOnly Cookieで保持し、変更操作にはCSRF tokenを使う。
+本番では`CGA_SESSION_SECRET`を設定し、HTTPS公開時は`secure_cookie: true`にする。
+
+既存の共有`token.json`だけを使っていた利用者は、利用者別トークンへの移行と
+`classroom.courses.readonly`スコープ追加のため、Web UIで一度再ログインする必要がある。
 
 ### 3. 課題の登録
 
@@ -115,8 +147,9 @@ docker compose run --rm grader run --coursework <courseWorkId> --lenient
 
 `report` の出力 CSV / サマリ:
 
-- `category`: `auto_0`/`auto_1`/`auto_2`(自動確定)、`auto_3`(3点・システム確認済み、下記)、
-  `candidate_3`(3点候補、TA確認が必要)、`review`(要確認)、`not_submitted`(未提出)
+- `category`: `auto_0`/`auto_1`/`auto_2`/`auto_3`/`candidate_3`は旧形式との読取互換用の
+  内部分類であり、Web UIではすべて教員確認が必要なAI採点案として扱う。ほかに`review`(要確認)、
+  `not_submitted`(未提出)がある
 - `tier`: candidate_3 内の格付け。`strong`(最有力、両順ペアワイズ勝ち)→ `borderline` の順で確認
 - `judge_score` / `evidence` / `flags` も出力
 
@@ -133,7 +166,9 @@ docker compose run --rm grader run --coursework <courseWorkId> --lenient
 `config.yaml` の `length_bonus.rubric_keys`(既定 `["KANSOU", "EFFORT"]`)で対象課題種別を限定する。
 **実験課題(EXPERIMENT)には現状適用しない**: 演習レポートは内容の質に関わらず全員が長文・
 専門用語だらけになりやすく、同じ閾値では判別力を持たないため(実測確認済み)。
-`auto_3` は返却対象には含めない(下書きのみ。満点の誤りは影響が大きいため)。
+`auto_3` は内部集計上の「高信頼な3点案」を表すだけで、成績の自動確定・自動返却対象にはしない。
+確定理由は `judge_full_marks_confirmed` / `length_bonus_confirmed` /
+`keyword_bonus_confirmed` の flags で区別する。
 
 ### 採点姿勢の切り替え
 
@@ -152,23 +187,90 @@ docker compose run --rm grader run --coursework <courseWorkId> --lenient
 
 ## 成績の書き戻し(下書き点の入力)
 
-Classroom API は「課題を作成したプロジェクト」以外からの成績書き込みを拒否する
-(UI作成課題は `ProjectPermissionDenied`)。そのため書き戻しは **2通り**:
+現行MVPでは、AI採点案をWeb UIで教員が確認・修正し、確認済み答案だけの短期バッチを作る。
+専用Chrome/Edge MV3拡張`extension/`がClassroom提出物ページの**空欄だけ**へ下書き点を入力する。
+最終確定・返却はClassroom上で教員が行い、システムは自動返却、削除、既存点上書きを行わない。
 
-- **方式A**: 採点API + ブラウザのユーザースクリプト … UI作成課題でも可(推奨・実運用済み)。
-  `./run.sh api-up` でAPIを起動し、`browser/classroom-grader.user.js` のパネルから
-  確定組(`auto_0`/`auto_1`/`auto_2`/`auto_3`)と要確認組(`candidate_3`/`review`)を分けて操作する:
-  「確定のみ入力」は確定組を下書き入力→対象生徒だけ選択→返却まで自動、「全て下書き」は
-  未返却の全員(確定組+要確認組)に下書き入力のみ(返却しない)。「下書き全削除」で入れ直しも可能。
-  返却済みの生徒には触れない(state判定)。外部NWからは SSH転送 /
-  Cloudflare Tunnel(手元PCに導入不要) / Tailscale で到達
-- **方式B**: `./run.sh push-grades <cw>` … このツール/API経由で作成した課題のみ直接書き込み
+1. 「AI採点案を作成」を押す。
+2. 全答案の提案点を確認・修正し、確認済みにする。
+3. 下書き対象をプレビューし、明示的に短期バッチを作る。
+4. Classroom提出物ページで拡張へペアリングコードを渡し、空欄へ入力する。
+5. Classroom上で教員が確認し、最終確定・返却する。
 
-運用の流れ: 「全て下書き」で全員分を投入 → 成績簿で要確認組(candidate_3/review)の判定を手直し →
-「確定のみ入力」で確定組を自動確定 → 要確認組は目視確認して手動返却。
-再分析後は「下書き全削除」→ 再入力。サーバー構成・アクセス経路(localhost/SSH/
-Cloudflare/Tailscale)・ユーザースクリプトの詳細は
-**[docs/grade-writeback.md](docs/grade-writeback.md)** を参照。
+Tampermonkey版`browser/classroom-grader.user.js`と`push-grades`はlegacy互換用で、現行運用では
+非推奨。詳しい安全条件と拡張の導入は
+**[docs/grade-writeback.md](docs/grade-writeback.md)**、固定HTTPS URLから利用する場合のgatewayと
+251 outbound agentは**[docs/outbound-gateway.md](docs/outbound-gateway.md)**を参照する。
+
+## Web UI（採点の実行・監視）
+
+APIコンテナは採点Web UIも配信する。実行ホスト251上で起動し、250または手元PCから
+SSHポート転送でアクセスする。
+
+```bash
+# 251上で実行（250から ssh kake-251 経由で発行）
+docker compose up -d api
+
+# 手元側で必要に応じて転送
+ssh -L 8800:localhost:8800 kake-251
+```
+
+ブラウザで `http://localhost:8800/ui/` を開く。Web UIでは以下を行える。
+
+固定HTTPS URLが必要な場合は、Linuxホスト上の既存APIをそのまま公開できる
+`docker-compose.funnel.yml`を使用する。起動、`tailscale funnel --bg 8800`、状態確認、解除、
+Google OAuthと公開時の安全設定は
+**[docs/tailscale-funnel.md](docs/tailscale-funnel.md)**を参照する。既存の
+`docker-compose.tailscale.yml`はvLLMへ到達できないlegacy構成で、新規運用では使用しない。
+
+- GoogleログインとClassroom OAuth接続（一度の同意操作）
+- 教師として参加中のACTIVEコース一覧と、選択コースの課題一覧
+- ルーブリック未登録課題の警告（自動推定せず採点開始を無効化）
+- 課題ごとの教師備考、0/1/2/3点条件、Classroom実点mapping、遅延減点の設定
+- コース内で採点基準テンプレートを保存・適用・名前変更・削除し、課題満点へ非線形mappingを換算
+- 集計前の提出・人間採点・システム採点・未処理件数の確認
+- 待ち行列の順番表示と、自分の待機中ジョブの取り消し
+- `run`（一次採点）、`refine`（審判）、`report`（集計）の起動
+- `run`実行時の「課題モード（strict）」／「感想文モード（lenient）」切り替え
+- 永続化されたジョブ状態・ログの確認
+- category別集計、要確認答案、根拠・flagsの確認とCSV取得
+- 教員確認済み点と人間採点だけを使ったコースランキング（同点同順位）
+- 明示確認後のGoogle Sheets出力（URL/ID、シート名、出力範囲を画面で指定）
+
+Google Sheets出力ではWeb OAuthだけにSheets書込scopeを追加する。従来のWebログイントークンには
+このscopeがないため、UIに案内が表示された場合は「Google権限を再接続」から一度だけ再同意する。
+CLI用のOAuth scopeと共有`token.json`は変更しない。Sheets APIはGoogle Cloud Consoleで別途有効化し、
+出力先スプレッドシートをログイン中のGoogleアカウントへ共有しておく。
+
+採点基準ダイアログでは、現在のフォーム内容をコース専用テンプレートとして保存できる。
+テンプレート適用はフォームへ反映するだけで、課題設定を自動保存しない。適用直後は必ず未確認へ戻るため、
+0〜3点条件と換算点を確認し、「採点に使用する」をチェックして保存するまで採点を開始できない。
+専用MV3拡張はWeb UIの「専用Chrome/Edge拡張をダウンロード」からZIPで取得できる。
+ZIPには固定allowlistの拡張ファイルだけが入り、設定値、token、学生データ、テストは含まれない。
+
+一括採点では、APIと分離したallowlist型`model-controller`が一次モデルと審判モデルを切り替える。
+Web UIで全答案を確認・修正して短期バッチを作った後、専用MV3拡張がClassroomの空欄へ
+下書き入力する。最終確定・返却はClassroom上で教員が行う。
+
+採点モードは採点姿勢（厳密／甘め）を切り替える。EXPERIMENT/KANSOU/EFFORT等の
+ルーブリック種別は`assignments`設定から課題ごとに自動選択され、採点モードとは別概念である。
+
+ジョブ状態は251上の `data/jobs/` に保存される。API再起動時に実行中だったジョブは
+`interrupted` と表示される。同時実行は単一vLLMを保護するため1件に制限される。
+実行中に新しく作成されたジョブは永続FIFOで待機する。安全なプロセス停止と部分成果物の扱いが
+未定義のため、現在取り消せるのは`queued`だけである。
+
+Webジョブの新規データは
+`data/courses/<course_id>/courseworks/<courseWorkId>/`下の`settings/meta/raw/pdf/pages/results/report.csv`に分離する。
+従来パスは移動・削除せず、`config.yaml`の既定コースに限って読み取りfallbackする。
+人間の`draftGrade`/`assignedGrade`は0点も含めて保護し、拡張による下書き入力対象から除外する。
+
+`run`/`refine`開始直前にGPU上のモデルIDと応答を再確認する。一括採点`full`では、APIと
+分離したallowlist型`model-controller`へ切替要求を送り、一次採点、審判、集計を順に実行する。
+APIコンテナへDocker socketは渡さない。
+
+コンテナは既定でUID/GID `1000:1000`として動く。実行ホストが異なる場合は `.env` に
+`CGA_UID=<id -uの値>` と `CGA_GID=<id -gの値>` を設定し、`data/`へ書き込めるユーザーに合わせる。
 
 ---
 
@@ -193,8 +295,8 @@ Cloudflare/Tailscale)・ユーザースクリプトの詳細は
 - 観点合計(0〜3)は**四捨五入**(0.5は必ず切り上げ)で整数化する(`grader/grade.py`
   `clamp_total`)。Python組み込みの `round()` は銀行丸め(`round(2.5)==2`)になり
   ルーブリックの指示と食い違うため使わない
-- 0/1/2点は自動確定、3点は自動確定せず候補提示(ただし `length_bonus` で一部は
-  `auto_3` として自動確認、上記参照)
+- 0/1/2/3点のすべてをAI採点案として提示し、教員確認後だけ下書き対象にする。`auto_*`や
+  `candidate_3`は採点アルゴリズム内部と旧report互換の分類であり、成績確定を意味しない
 - レビュー行きの判定: ゲート不通過・2回不一致・形式違反・切り捨て・エラーは常にレビュー行き。
   審判フェーズ未実施の答案は一次採点自身が書いた flags(判断に迷った旨の自由記述)も
   レビュー行きの根拠にするが、審判フェーズ実施済みなら judge との突き合わせ(下記)に委ねる
@@ -234,11 +336,14 @@ Cloudflare/Tailscale)・ユーザースクリプトの詳細は
 
 ```
 grader/            採点ロジック(fetch/render/grade/pairwise/report/push/api …)
-browser/           成績簿入力ユーザースクリプト
-scripts/           vllm-server.sh(モデルプロファイル切り替え)
+extension/         現行のClassroom下書き入力用Chrome/Edge MV3拡張
+browser/           legacy互換用ユーザースクリプト（現行運用では非推奨）
+gateway/           固定HTTPS URL用gatewayと251 outbound agent
+scripts/           vllm-server.sh、model-controller.py
 tests/             ユニットテスト
 config.example.yaml 設定テンプレート(実値の config.yaml は gitignore)
-docker-compose.tailscale.yml  Tailscale経由でAPIをHTTPS公開するオーバーレイ
+docker-compose.tailscale.yml  api-ts/netns方式のlegacyオーバーレイ（新規運用では非推奨）
+docker-compose.funnel.yml     既存APIをTailscale Funnelで公開するLinux用override
 data/
   raw/ pdf/ pages/ results/ meta/ report/ calibration/   各段階の中間成果物(冪等・部分再実行可)
 ```

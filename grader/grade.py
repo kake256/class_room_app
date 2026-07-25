@@ -13,6 +13,7 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from .config import Config
+from .course_settings import settings_fingerprint, settings_prompt
 from .rubric import GRADING_SCHEMA, SYSTEM_PROMPT, build_user_prompt, resolve_assignment
 
 log = logging.getLogger(__name__)
@@ -69,15 +70,24 @@ class Grader:
         cfg: Config,
         coursework_id: str | None = None,
         lenient: bool | None = None,
+        lightweight_settings: dict[str, Any] | None = None,
     ):
         self.cfg = cfg
         self.coursework_id = coursework_id
         self.lenient = lenient  # None=厳しめ既定
+        self.lightweight_settings = lightweight_settings
+        self.settings_fingerprint = settings_fingerprint(lightweight_settings)
         # courseWorkId → 課題文・ルーブリックを config の assignments: から解決
         assignments_map = cfg.get("assignments", default={}) or {}
-        self.assignment_text, self.rubric_key = resolve_assignment(
-            coursework_id, assignments_map
-        )
+        try:
+            self.assignment_text, self.rubric_key = resolve_assignment(
+                coursework_id, assignments_map
+            )
+        except KeyError:
+            if not lightweight_settings or not lightweight_settings.get("confirmed"):
+                raise
+            self.assignment_text = "Web UIで教師が設定した軽量採点条件に従う課題"
+            self.rubric_key = "GENERIC"
         self.client = AsyncOpenAI(
             base_url=cfg.get("vllm", "base_url", default="http://localhost:8000/v1"),
             api_key=cfg.get("vllm", "api_key", default="EMPTY"),
@@ -89,7 +99,11 @@ class Grader:
     async def grade_once(self, page_paths: list[pathlib.Path]) -> dict[str, Any]:
         content: list[dict[str, Any]] = [
             {"type": "text", "text": build_user_prompt(
-                self.assignment_text, self.rubric_key, self.lenient)}
+                self.assignment_text, self.rubric_key, self.lenient) + (
+                    "\n\n" + settings_prompt(self.lightweight_settings)
+                    if self.lightweight_settings and self.lightweight_settings.get("confirmed")
+                    else ""
+                )}
         ]
         content += [_b64_image(p) for p in page_paths]
         async with self.sem:
@@ -122,7 +136,9 @@ class Grader:
         src_hash = file_sha256(source_pdf) if source_pdf else None
         if result_path.exists() and not force:
             prev = json.loads(result_path.read_text(encoding="utf-8"))
-            if prev.get("source_sha256") == src_hash and prev.get("status") == "ok":
+            if (prev.get("source_sha256") == src_hash
+                    and prev.get("settings_fingerprint") == self.settings_fingerprint
+                    and prev.get("status") == "ok"):
                 log.info("%s: skipped (already graded)", student_id)
                 return prev
 
@@ -142,6 +158,7 @@ class Grader:
             n_pages=len(page_paths),
             elapsed_sec=round(time.monotonic() - t0, 1),
             graded_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+            settings_fingerprint=self.settings_fingerprint,
         )
         if extra_flags:
             result["flags"] = sorted(set(result.get("flags", [])) | set(extra_flags))

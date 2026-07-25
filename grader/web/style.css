@@ -1,0 +1,23 @@
+:root{font-family:system-ui,sans-serif;color:#172033;background:#f4f6fa}*{box-sizing:border-box}
+body{margin:0}header{background:#213555;color:#fff;padding:1.2rem 3vw}header h1{margin:0}header p{margin:.3rem 0 0}
+main{max-width:1280px;margin:auto;padding:1rem}section{background:#fff;margin:1rem 0;padding:1rem;border-radius:10px;box-shadow:0 1px 4px #ccd2dc}
+.toolbar{display:flex;gap:.7rem;align-items:end;flex-wrap:wrap}.cards{display:flex;gap:.7rem;flex-wrap:wrap}.card{padding:.7rem 1rem;background:#edf2f8;border-radius:7px}
+button,.button{border:0;background:#2457a7;color:#fff;padding:.55rem .8rem;border-radius:6px;cursor:pointer;text-decoration:none;display:inline-block}
+button.danger{background:#a42c2c}button:disabled{opacity:.5;cursor:not-allowed}input,select{padding:.45rem;border:1px solid #9aa5b5;border-radius:5px}
+.course,.job{border-top:1px solid #d9dee7;padding:.8rem 0}.course-actions{display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.5rem}.error{color:#a00;font-weight:600}
+.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:.9rem}th,td{text-align:left;padding:.55rem;border-bottom:1px solid #ddd;vertical-align:top}
+.review{background:#fff0f0}.candidate_3{background:#fff8db}.auto_3{background:#e8f7ea}pre{white-space:pre-wrap;max-height:12rem;overflow:auto;background:#172033;color:#eef;padding:.6rem}
+.auth-panel{display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;padding:.8rem;background:#f7f9fc;border:1px solid #d9dee7;border-radius:8px}.auth-panel>div{flex:1;min-width:15rem}.auth-panel p{margin:.2rem 0 0}.badge{display:inline-block;padding:.3rem .55rem;border-radius:999px;background:#e6eaf0}.badge.connected{background:#dff3e4;color:#17652b}.badge.warning{background:#fff0ce;color:#805500}.badge.missing{background:#f8dddd;color:#8b1e1e}
+@media(max-width:650px){header{padding:1rem}main{padding:.5rem}section{padding:.7rem}th:nth-child(4),td:nth-child(4),th:nth-child(5),td:nth-child(5){display:none}}
+
+/* 補足説明とコマンド表記(2026-07-20 UI改修) */
+.hint { color: #666; font-size: 0.85rem; line-height: 1.6; }
+.hint code { background: #f0f0f0; padding: 1px 5px; border-radius: 3px; font-size: 0.85em; }
+.setup-steps{display:grid;gap:.8rem}.setup-step{display:flex;gap:1rem;padding:1rem;border:1px solid #d9dee7;border-radius:9px;background:#fafbfd}.setup-step h3{margin:.1rem 0 .5rem}.setup-step p,.setup-step ol{margin:.4rem 0}.step-number{display:grid;place-items:center;flex:0 0 2rem;height:2rem;border-radius:50%;background:#2457a7;color:#fff;font-weight:700}.pairing-code{display:flex;gap:.7rem;align-items:end;flex-wrap:wrap;margin-top:.8rem}.pairing-code label{flex:1;min-width:16rem}.pairing-code input{width:100%;font:600 1rem ui-monospace,monospace;letter-spacing:.06em}.safety-note{margin-top:1rem;padding:.8rem;background:#eef4ff;border-left:4px solid #2457a7;border-radius:4px}
+@media(max-width:650px){.setup-step{gap:.6rem;padding:.8rem}.step-number{flex-basis:1.7rem;height:1.7rem}}
+
+/* 疑問答案の優先表示 */
+tr.risk td { background: #fff7ed; }
+tr.risk td:first-child { font-weight: 600; color: #9a3412; }
+.risk-reasons { color: #9a3412; font-size: 0.85em; margin-bottom: 0.2em; }
+.info-badges { color: #475569; font-size: 0.8em; margin-bottom: 0.2em; }

@@ -1,18 +1,16 @@
 services:
   grader:
     build: .
-    user: "1002:1002"        # 生成物をホストユーザー所有にする
+    user: "${CGA_UID:-1000}:${CGA_GID:-1000}"  # 実行ホストのUID/GIDに合わせる
     environment:
       HOME: /tmp             # LibreOffice等がHOMEに書けるように
     volumes:
       - ./data:/app/data            # 中間成果物・結果
       - ./samples:/app/samples      # キャリブレーション用サンプル
       - ./config.yaml:/app/config.yaml:ro
-      # OAuth 認証情報(事前に credentials.json を配置し `touch token.json`)
+      # OAuthクライアントを配置。token.jsonはWeb UI接続時に作成・更新される。
       - ./credentials.json:/app/credentials.json:ro
       - ./token.json:/app/token.json
-    ports:
-      - "127.0.0.1:8765:8765"   # 初回OAuth認証用(SSH時は -L 8765:localhost:8765 で転送)
     extra_hosts:
       - "host.docker.internal:host-gateway"   # ホストのvLLMへ接続
     # 使用例:
@@ -22,9 +20,18 @@ services:
 
   api:
     build: .
-    user: "1002:1002"
+    user: "${CGA_UID:-1000}:${CGA_GID:-1000}"
+    # host側controllerのuser systemd unitと同じ秘密値ファイルを共有する。
+    env_file:
+      - path: .env.model-controller
+        required: false  # 実起動前には必須。未配置時はfullが安全にblockedになる。
     environment:
       HOME: /tmp
+      # 本番では.env等から設定。未設定なら起動ごとに生成され再起動時ログアウト。
+      CGA_SESSION_SECRET: "${CGA_SESSION_SECRET:-}"
+      CGA_MODEL_CONTROLLER_URL: "http://model-controller:8810"
+      # MCPのDNS rebinding保護で許可する公開origin。Funnel/gateway運用時にHTTPS URLを指定。
+      CGA_MCP_PUBLIC_URL: "${CGA_MCP_PUBLIC_URL:-http://localhost:8800}"
     entrypoint: ["uvicorn", "grader.api:app", "--host", "0.0.0.0", "--port", "8800"]
     volumes:
       - ./data:/app/data
@@ -32,10 +39,37 @@ services:
       - ./config.yaml:/app/config.yaml:ro
       - ./credentials.json:/app/credentials.json:ro
       - ./token.json:/app/token.json
+      - ./browser:/app/browser:ro   # ユーザースクリプト配信用(/ui/classroom-grader.user.js)
     ports:
       - "127.0.0.1:8800:8800"    # localhostのみ公開(学生データを外に出さない)
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      model-controller:
+        condition: service_healthy
+
+  model-controller:
+    build:
+      context: .
+      dockerfile: Dockerfile.model-controller
+    env_file:
+      - path: .env.model-controller
+        required: false  # secret未設定時は/switchが401でfail closedする。
+    environment:
+      CGA_MODEL_CONTROLLER_HOST: "0.0.0.0"
+      VLLM_BASE_URL: "http://host.docker.internal:8000"
+      # Docker daemonが解釈する251上の絶対パス。実起動時に必ず明示する。
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8810/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
 
   test:
     build: .

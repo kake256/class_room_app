@@ -43,6 +43,9 @@ _PAIRWISE_TAIL = """\
 # 課題タイプ(rubric種別)ごとの比較軸。ペアワイズは一次3点候補を2点アンカーと
 # 比較して降格判定するため、比較軸が課題と噛み合っていないと誤降格する。
 PAIRWISE_PROMPTS = {
+    "GENERIC": """\
+2つの答案を、教師が明示した課題別の0〜3点条件に従って中立に比較します。
+課題固有の実験、数値、手法、用語を推測で要求せず、明示条件への充足度と答案内の根拠だけを比較する。""" + _PAIRWISE_TAIL,
     "EXPERIMENT": """\
 2つのレポート答案(答案1、答案2)を比較します。どちらも「機械学習の識別器の
 パラメータを変えて識別境界と識別率を調べる」実験課題の提出物です。
@@ -118,8 +121,12 @@ def judge_crit_min_sum(runs: list[dict[str, Any]]) -> float | None:
 
 
 class PairwiseRefiner:
-    def __init__(self, cfg: Config, coursework_id: str | None = None):
-        self.grader = Grader(cfg, coursework_id=coursework_id)
+    def __init__(self, cfg: Config, coursework_id: str | None = None,
+                 lenient: bool | None = None,
+                 lightweight_settings: dict[str, Any] | None = None):
+        # lenient: judge再採点の採点姿勢(None=厳しめ既定)。一次採点と合わせる
+        self.grader = Grader(cfg, coursework_id=coursework_id, lenient=lenient,
+                             lightweight_settings=lightweight_settings)
         judge_model = cfg.get("pairwise", "model", default=None)
         if judge_model:  # 審判モデルが一次採点と異なる場合の上書き
             self.grader.model = str(judge_model)
@@ -128,10 +135,13 @@ class PairwiseRefiner:
         self.anchor_pages_limit = int(cfg.get("pairwise", "anchor_max_pages", default=4))
         self.cand_pages_limit = int(cfg.get("pairwise", "candidate_max_pages", default=6))
         # 課題タイプに応じた比較軸を選ぶ(噛み合わない軸での誤降格を防ぐ)
-        try:
-            _, rubric_key = resolve_assignment(coursework_id, cfg.get("assignments") or {})
-        except Exception:  # noqa: BLE001 未登録等は実験課題の軸にフォールバック
-            rubric_key = "EXPERIMENT"
+        if lightweight_settings and lightweight_settings.get("confirmed"):
+            rubric_key = "GENERIC"
+        else:
+            try:
+                _, rubric_key = resolve_assignment(coursework_id, cfg.get("assignments") or {})
+            except Exception:  # noqa: BLE001 未登録等は実験課題の軸にフォールバック
+                rubric_key = "EXPERIMENT"
         self.pairwise_prompt = PAIRWISE_PROMPTS.get(rubric_key, PAIRWISE_PROMPTS["EXPERIMENT"])
 
     async def compare_once(
@@ -216,14 +226,24 @@ class PairwiseRefiner:
 
 
 def refine_candidates(
-    cfg: Config, coursework_id: str, anchor_student: str, force: bool = False
+    cfg: Config, coursework_id: str, anchor_student: str, force: bool = False,
+    lenient: bool | None = None, *, course_id: str | None = None,
 ) -> None:
     """審判フェーズを実行する(judge再採点は全答案、ペアワイズは一次3点候補のみ)。"""
     data = cfg.data_dir
-    results_dir = data / "results" / coursework_id
-    pages_root = data / "pages" / coursework_id
+    if course_id:
+        from .course_data import CoursePaths
+        from .course_settings import load_settings
+        paths = CoursePaths(cfg, course_id, coursework_id)
+        results_dir, pages_root = paths.read_path("results"), paths.read_path("pages")
+        lightweight_settings = load_settings(cfg, course_id, coursework_id)
+    else:
+        results_dir = data / "results" / coursework_id
+        pages_root = data / "pages" / coursework_id
+        lightweight_settings = None
 
-    refiner = PairwiseRefiner(cfg, coursework_id=coursework_id)
+    refiner = PairwiseRefiner(cfg, coursework_id=coursework_id, lenient=lenient,
+                              lightweight_settings=lightweight_settings)
     anchor_dir = pages_root / anchor_student
     anchor_pages = sorted(anchor_dir.glob("p*.png"), key=lambda p: int(p.stem[1:]))
     if not anchor_pages:

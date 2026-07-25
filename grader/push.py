@@ -1,8 +1,8 @@
-"""自動確定分(auto_0/1/2)の下書き点(draftGrade)を Classroom に書き込む。
+"""自動確定分(auto_0/1/2/3)の下書き点(draftGrade)を Classroom に書き込む。
 
 安全設計:
 - 書き込むのは draftGrade のみ(assignedGrade/返却は行わない。学生には見えない)
-- 対象は category が auto_0/auto_1/auto_2 の学生のみ
+- 対象は category が auto_0/auto_1/auto_2/auto_3 の学生のみ
   (candidate_3 / review / not_submitted はスキップ=人間が判断)
 - 点数は report CSV の score_after_late(遅延減点適用後)
 - --dry-run で書き込み内容の確認のみ可能
@@ -23,10 +23,10 @@ from .fetch import _course_id, get_services
 
 log = logging.getLogger(__name__)
 
-AUTO_CATEGORIES = {"auto_0", "auto_1", "auto_2"}
+AUTO_CATEGORIES = {"auto_0", "auto_1", "auto_2", "auto_3"}
 
 # 100点満点課題への変換(内部0〜3点 → 100点スケール)。
-# 3点はTAが確認して上積みする前提の基準値(pushはauto_0/1/2のみ書くため参考値)
+# 100点満点課題では内部3点を85点へ変換する。
 SCORE_MAP_100 = {0: 70, 1: 75, 2: 80, 3: 85}
 
 
@@ -45,7 +45,7 @@ def push_draft_grades(
     cfg: Config, coursework_id: str, dry_run: bool = False,
     include_candidates: bool = False,
 ) -> None:
-    """auto_0/1/2(+オプションでcandidate_3)の下書き点を書き込む。
+    """auto_0/1/2/3(+オプションでcandidate_3)の下書き点を書き込む。
 
     include_candidates: 3点候補にも基準値(3点満点なら3、100点満点なら85)を
     下書きする。感想文回など「基準値を入れてTAが上積み修正する」運用向け。
@@ -58,7 +58,7 @@ def push_draft_grades(
     cats = AUTO_CATEGORIES | ({"candidate_3"} if include_candidates else set())
     targets = df[df["category"].isin(cats)].copy()
     if targets.empty:
-        print("書き込み対象の学生がいません(auto_0/1/2が0人。"
+        print("書き込み対象の学生がいません(auto_0/1/2/3が0人。"
               "3点候補にも基準値を入れる場合は --include-candidates)。")
         return
 
@@ -70,7 +70,7 @@ def push_draft_grades(
         lambda s: map_score(int(s), max_points)
     )
 
-    scope = "auto_0/1/2+3点候補" if include_candidates else "auto_0/1/2のみ"
+    scope = "auto_0/1/2/3+3点候補" if include_candidates else "auto_0/1/2/3のみ"
     print(f"書き込み対象: {len(targets)}人(draftGradeのみ、{scope}、満点{max_points}点)")
     for _, r in targets.iterrows():
         scale = "" if max_points == 3 else f"(内部{int(r.score_after_late)}点→)"

@@ -1,0 +1,14 @@
+# Linuxホスト上の既存API (127.0.0.1:8800) をTailscale Funnelで公開するoverride。
+# docker-compose.tailscale.ymlのapi-ts/netns構成とは併用しない。
+services:
+  tailscale-funnel:
+    image: tailscale/tailscale:latest
+    hostname: classroom-grader
+    network_mode: host
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:?TS_AUTHKEY を .env に設定してください}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "true"
+    volumes:
+      - ./data/tailscale-funnel:/var/lib/tailscale
+    restart: unless-stopped

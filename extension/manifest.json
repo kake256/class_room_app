@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Classroom Grading Draft Filler",
+  "version": "0.5.4",
+  "description": "Classroomの空の成績欄へ下書きを入力し、同じ画面で入力した分だけ安全に取り消せます。",
+  "permissions": ["storage"],
+  "host_permissions": ["https://classroom-grader-1.tail80e540.ts.net/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": {"service_worker": "background.js"},
+  "options_page": "options.html",
+  "action": {"default_title": "Classroom Grading Draft Filler"},
+  "content_scripts": [{
+    "matches": ["https://classroom.google.com/*"],
+    "js": ["core.js", "selectors.js", "content.js"],
+    "run_at": "document_idle"
+  }, {
+    "matches": ["https://classroom-grader-1.tail80e540.ts.net/ui/*"],
+    "js": ["core.js", "bridge.js"],
+    "run_at": "document_start"
+  }]
+}

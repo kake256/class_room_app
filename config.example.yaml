@@ -11,27 +11,91 @@ grading:
   runs: 2                # 1答案あたりの採点回数
   concurrency: 4         # asyncio 並列数(4〜6推奨)
 
+# Web UI/MCPの一括採点で使う高速経路。本文はまとめ、図表答案だけ画像で処理する。
+hybrid_grading:
+  text_batch_max_items: 12
+  text_batch_max_chars: 10000
+  concurrency: 4
+  review_confidence_threshold: 0.6
+
 render:
   dpi: 150
   max_pages: 8
 
 classroom:
-  course_id: "<コースID>"                # Classroom URLの c/ の後ろのID(またはBase64形式)
+  course_id: "<CLI利用時の既定コースID>" # Web UIは担当コースから選択する
   credentials_file: "credentials.json"
   token_file: "token.json"
+  # Web UIのOAuth tokenはGoogle利用者ごとに匿名ファイル名で分離保存する。
+  # 省略時は paths.data_dir/oauth_tokens。token_fileはCLI後方互換のみ。
+  user_token_dir: "data/oauth_tokens"
+  # Web UIからのOAuth完了後にGoogleが戻すURL。installed型はこのlocalhost既定値を利用可能。
+  # web型クライアントではGoogle Cloud Consoleの「承認済みのリダイレクトURI」へ完全一致で登録する。
+  oauth_redirect_uri: "http://localhost:8800/oauth2callback"
+  oauth_state_ttl_seconds: 600
 
 paths:
   data_dir: "data"
 
 # courseWorkId → 課題キー(rubric.ASSIGNMENT_SPECS のキー: rf/svm/adaboost/
-# kansou1/tokubetsu0511/sukina)。新しい課題は ./run.sh list で courseWorkId を確認して追加。
+# kansou1/tokubetsu0511/sukina/ai_kansou/application_research/distance/knn/
+# face_detection)。新しい課題は ./run.sh list で courseWorkId を確認して追加。
 assignments:
   "<courseWorkId>": rf
 
 late_penalty: 1
 
-api:                     # 採点結果API(grader/api.py、localhost:8800)
-  token: null            # 設定すると X-API-Key ヘッダ必須になる(未設定=localhost前提で認証なし)
+report:
+  # この時間を超えたClassroom metaでは通常集計を拒否する。
+  meta_max_age_seconds: 900
+
+web_auth:
+  # 本番ではCGA_SESSION_SECRET環境変数に十分長いランダム値を設定する。
+  # 未設定時は paths.data_dir/session_secret に0600で生成し、再起動後も再利用する。
+  session_secret: null
+  session_ttl_seconds: 43200
+  secure_cookie: false   # HTTPS公開時はtrue
+  # 本番でtrueにすると、roles未設定時は全ログインを拒否する。
+  require_explicit_roles: false
+  allowed_emails: []     # 例: ["teacher@example.edu"]（実在アドレスをexampleへ書かない）
+  allowed_domains: []    # 例: ["example.edu"]。両方空ならOAuthで許可された全ユーザー
+  roles:
+    # 上からadmin > grader > viewerの優先順。email/domainは小文字へ正規化される。
+    # 全roleが空の場合のみ、上記の従来allowlist許可者をgraderとして扱う（開発互換）。
+    admin:
+      emails: []
+      domains: []
+    grader:
+      emails: []
+      domains: []
+    viewer:
+      emails: []
+      domains: []
+
+audit:
+  # 省略時は paths.data_dir/audit.jsonl。actorは匿名化し、操作情報のみ追記する。
+  path: null
+
+integration:
+  # Classroomページ上のuserscriptから /grades を読むためだけの専用token。
+  # Web UIはこの値を使わず、GoogleログインCookieで認証する。
+  token: null
+
+draft_batches:
+  ttl_seconds: 600
+
+mcp:
+  # HTTPS公開時は実際のoriginを指定する。OAuth resourceはこの値 + /mcp。
+  public_url: "http://localhost:8800"
+
+mcp_oauth:
+  access_ttl_seconds: 3600
+  refresh_ttl_seconds: 2592000
+  max_clients: 200
+
+model_controller:
+  base_url: "http://host.docker.internal:8810"
+  timeout_seconds: 1500
 
 pairwise:                # 審判フェーズ(refine)
   model: "Qwen/Qwen3-VL-8B-Instruct-FP8"

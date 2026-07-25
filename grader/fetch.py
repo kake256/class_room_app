@@ -11,6 +11,7 @@ import logging
 import os
 import pathlib
 import subprocess
+import time
 from typing import Any
 
 from .config import Config
@@ -18,6 +19,7 @@ from .config import Config
 log = logging.getLogger(__name__)
 
 SCOPES = [
+    "https://www.googleapis.com/auth/classroom.courses.readonly",
     # 読み書き両用(draftGradeの書き込みに必要。readonlyを包含する)
     "https://www.googleapis.com/auth/classroom.coursework.students",
     "https://www.googleapis.com/auth/classroom.rosters.readonly",
@@ -44,42 +46,74 @@ def normalize_gid(gid: str) -> str:
     return gid
 
 
-def _course_id(cfg: Config) -> str:
-    return normalize_gid(str(cfg.get("classroom", "course_id", default="")))
+def _course_id(cfg: Config, course_id: str | None = None) -> str:
+    return normalize_gid(str(course_id if course_id is not None else
+                             cfg.get("classroom", "course_id", default="")))
 
 
-def list_courseworks(cfg: Config) -> list[dict[str, Any]]:
+def list_teacher_courses(classroom) -> list[dict[str, Any]]:
+    """現在のOAuth利用者が教師として担当するACTIVEコースを返す。"""
+    items: list[dict[str, Any]] = []
+    page_token = None
+    while True:
+        resp = classroom.courses().list(
+            teacherId="me", courseStates=["ACTIVE"], pageSize=100,
+            pageToken=page_token,
+            fields="courses(id,name,section,courseState),nextPageToken",
+        ).execute()
+        items.extend(resp.get("courses", []))
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            return items
+
+
+def teacher_course(classroom, course_id: str) -> dict[str, Any] | None:
+    wanted = normalize_gid(course_id)
+    return next((course for course in list_teacher_courses(classroom)
+                 if str(course.get("id", "")) == wanted), None)
+
+
+def list_courseworks(
+    cfg: Config, *, course_id: str | None = None, token_file: str | pathlib.Path | None = None,
+    classroom=None, print_rows: bool = True,
+) -> list[dict[str, Any]]:
     """コースの課題一覧(id, タイトル, 締切, 配点)を表示して返す。過去課題のID確認用。"""
-    classroom, _ = get_services(cfg)
-    course_id = _course_id(cfg)
+    if classroom is None:
+        classroom, _ = get_services(cfg, token_file=token_file)
+    selected_course_id = _course_id(cfg, course_id)
     items: list[dict[str, Any]] = []
     page_token = None
     while True:
         resp = (
             classroom.courses()
             .courseWork()
-            .list(courseId=course_id, orderBy="dueDate desc", pageToken=page_token)
+            .list(courseId=selected_course_id, orderBy="dueDate desc", pageToken=page_token,
+                  fields="courseWork(id,title,dueDate,maxPoints),nextPageToken")
             .execute()
         )
         items += resp.get("courseWork", [])
         page_token = resp.get("nextPageToken")
         if not page_token:
             break
-    print(f"{'courseWorkId':<16} {'締切':<12} {'配点':<4} タイトル")
-    for w in items:
-        due = w.get("dueDate", {})
-        due_s = f"{due.get('year', '----')}-{due.get('month', '--'):>02}-{due.get('day', '--'):>02}" if due else "-"
-        print(f"{w['id']:<16} {due_s:<12} {str(w.get('maxPoints', '-')):<4} {w.get('title', '')}")
+    if print_rows:
+        print(f"{'courseWorkId':<16} {'締切':<12} {'配点':<4} タイトル")
+        for w in items:
+            due = w.get("dueDate", {})
+            due_s = f"{due.get('year', '----')}-{due.get('month', '--'):>02}-{due.get('day', '--'):>02}" if due else "-"
+            print(f"{w['id']:<16} {due_s:<12} {str(w.get('maxPoints', '-')):<4} {w.get('title', '')}")
     return items
 
 
-def fetch_assigned_grades(cfg: Config, coursework_id: str) -> dict[str, Any]:
+def fetch_assigned_grades(
+    cfg: Config, coursework_id: str, *, course_id: str | None = None,
+    token_file: str | pathlib.Path | None = None,
+) -> dict[str, Any]:
     """過去課題の確定済み成績(assignedGrade)を studentId → 点数 で返す。
 
     過去課題での傾向検証(verify)の正解データとして使う。
     """
-    classroom, _ = get_services(cfg)
-    course_id = _course_id(cfg)
+    classroom, _ = get_services(cfg, token_file=token_file)
+    selected_course_id = _course_id(cfg, course_id)
     grades: dict[str, Any] = {}
     page_token = None
     while True:
@@ -87,7 +121,7 @@ def fetch_assigned_grades(cfg: Config, coursework_id: str) -> dict[str, Any]:
             classroom.courses()
             .courseWork()
             .studentSubmissions()
-            .list(courseId=course_id, courseWorkId=coursework_id, pageToken=page_token)
+            .list(courseId=selected_course_id, courseWorkId=coursework_id, pageToken=page_token)
             .execute()
         )
         for sub in resp.get("studentSubmissions", []):
@@ -122,7 +156,10 @@ def get_roster(classroom, course_id: str) -> dict[str, dict[str, str]]:
     return roster
 
 
-def get_services(cfg: Config):
+def get_services(
+    cfg: Config, *, token_file: str | pathlib.Path | None = None,
+    allow_interactive: bool = True,
+):
     """OAuth(TAアカウント)で classroom / drive サービスを得る。"""
     # Googleは coursework.students.readonly の別名として
     # student-submissions.students.readonly を返すことがあり、
@@ -133,19 +170,19 @@ def get_services(cfg: Config):
     from google_auth_oauthlib.flow import InstalledAppFlow
     from googleapiclient.discovery import build
 
-    token_file = cfg.get("classroom", "token_file", default="token.json")
+    selected_token_file = str(token_file or cfg.get("classroom", "token_file", default="token.json"))
     creds = None
-    token_path = pathlib.Path(token_file)
+    token_path = pathlib.Path(selected_token_file)
     # 空ファイル(マウント用プレースホルダ)や壊れたトークンは未認証として扱う
     if token_path.exists() and token_path.stat().st_size > 0:
         try:
-            creds = Credentials.from_authorized_user_file(token_file, SCOPES)
+            creds = Credentials.from_authorized_user_file(selected_token_file, SCOPES)
         except ValueError as e:
             log.warning("token.json を読めないため再認証します: %s", e)
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
-        else:
+        elif allow_interactive:
             cred_file = cfg.get("classroom", "credentials_file", default="credentials.json")
             cred_path = pathlib.Path(cred_file)
             if not cred_path.exists() or cred_path.stat().st_size == 0:
@@ -164,7 +201,10 @@ def get_services(cfg: Config):
             creds = flow.run_local_server(
                 port=8765, bind_addr="0.0.0.0", open_browser=False,
             )
-        pathlib.Path(token_file).write_text(creds.to_json())
+        else:
+            raise RuntimeError("Google Classroomとの接続が必要です。再度Googleログインしてください。")
+        from .google_auth import write_token_atomic
+        write_token_atomic(token_path, creds.to_json())
     return build("classroom", "v1", credentials=creds), build("drive", "v3", credentials=creds)
 
 
@@ -197,19 +237,27 @@ def _download(drive, file_id: str, dest: pathlib.Path, export_pdf: bool = False)
             _, done = dl.next_chunk()
 
 
-def fetch_submissions(cfg: Config, coursework_id: str) -> list[dict[str, Any]]:
+def fetch_submissions(
+    cfg: Config, coursework_id: str, *, course_id: str | None = None,
+    token_file: str | pathlib.Path | None = None,
+) -> list[dict[str, Any]]:
     """提出物をダウンロードしてPDFに統一、メタデータを meta/<cw>.jsonl に保存。
 
     冪等: DriveのmodifiedTimeが前回と同じならダウンロードをスキップ。
     再提出(modifiedTime変化)は上書き取得し、下流で自動再採点される。
     ローカル運用のため匿名化は行わず、userId と実名をそのまま扱う。
     """
-    classroom, drive = get_services(cfg)
-    course_id = _course_id(cfg)
+    classroom, drive = get_services(cfg, token_file=token_file)
+    selected_course_id = _course_id(cfg, course_id)
     data = cfg.data_dir
-    raw_dir = data / "raw" / coursework_id
-    pdf_dir = data / "pdf" / coursework_id
-    meta_path = data / "meta" / f"{coursework_id}.jsonl"
+    if course_id:
+        from .course_data import CoursePaths
+        paths = CoursePaths(cfg, selected_course_id, coursework_id)
+        raw_dir, pdf_dir, meta_path = paths.raw, paths.pdf, paths.meta
+    else:
+        raw_dir = data / "raw" / coursework_id
+        pdf_dir = data / "pdf" / coursework_id
+        meta_path = data / "meta" / f"{coursework_id}.jsonl"
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     pdf_dir.mkdir(parents=True, exist_ok=True)
 
@@ -220,7 +268,7 @@ def fetch_submissions(cfg: Config, coursework_id: str) -> list[dict[str, Any]]:
                 m = json.loads(line)
                 prev_meta[m["student_id"]] = m
 
-    roster = get_roster(classroom, course_id)
+    roster = get_roster(classroom, selected_course_id)
 
     metas: list[dict[str, Any]] = []
     page_token = None
@@ -229,7 +277,7 @@ def fetch_submissions(cfg: Config, coursework_id: str) -> list[dict[str, Any]]:
             classroom.courses()
             .courseWork()
             .studentSubmissions()
-            .list(courseId=course_id, courseWorkId=coursework_id, pageToken=page_token)
+            .list(courseId=selected_course_id, courseWorkId=coursework_id, pageToken=page_token)
             .execute()
         )
         for sub in resp.get("studentSubmissions", []):
@@ -240,6 +288,9 @@ def fetch_submissions(cfg: Config, coursework_id: str) -> list[dict[str, Any]]:
                 "name": student.get("name", ""),
                 "email": student.get("email", ""),
                 "state": sub.get("state"),
+                "draft_grade": sub.get("draftGrade"),
+                "assigned_grade": sub.get("assignedGrade"),
+                "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "late": bool(sub.get("late", False)),
                 "update_time": sub.get("updateTime"),
                 "format_violation": False,

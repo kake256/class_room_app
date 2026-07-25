@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Classroom Grader (確定=入力+返却・全員=下書きのみ)
 // @namespace    classroom-grading-automation
-// @version      4.0
-// @description  採点APIから点数を取得。確定(auto_0/1/2/3)は入力+返却、全員は下書きのみ入力。下書き全削除も可
+// @version      5.0
+// @description  コース別採点APIから保護済み実点数を取得し、人間採点を上書きせず入力
 // @match        https://classroom.google.com/*
 // @updateURL    https://raw.githubusercontent.com/kake256/class_room_app/main/browser/classroom-grader.user.js
 // @downloadURL  https://raw.githubusercontent.com/kake256/class_room_app/main/browser/classroom-grader.user.js
@@ -84,11 +84,12 @@
     return el.getAttribute("aria-checked") === "true" || el.checked === true;
   }
 
-  async function fetchGrades(cw) {
+  // APIから採点結果一式を取得。{grades, max_points, ...} を返す
+  async function fetchGrades(course, cw) {
     const headers = apiToken() ? { "X-API-Key": apiToken() } : {};
-    const res = await fetch(`${apiBase()}/grades/${cw}`, { headers });
+    const res = await fetch(`${apiBase()}/grades/${course}/${cw}`, { headers });
     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
-    return (await res.json()).grades;
+    return await res.json();
   }
 
   // セレクタに合う要素を {正規化氏名 -> 要素} で集める(nameFn で氏名抽出方法を切替)
@@ -188,17 +189,31 @@
     return { done, skip, fail, left: remaining.size };
   }
 
-  // 未返却(TURNED_IN)で点数があり、指定カテゴリに属する生徒を {氏名 -> {score,name,category}} で返す
-  function buildTargets(grades, cats) {
+  // 未返却(TURNED_IN)で点数があり、指定カテゴリに属する生徒を {氏名 -> {score,name,category,held}} で返す
+  // held=true: demoted_from_3(3点評価からの降格)フラグ付き。下書きは入れるが自動返却しない
+  // maxPoints: 課題の満点。3以外(100点/5点等)は3点スケールから換算して入力する
+  function buildTargets(grades, cats, maxPoints) {
     const remaining = new Map();
+    const scale = maxPoints && maxPoints !== 3;
     grades.forEach((g) => {
       const c = String(g.category);
-      const score = g.score_after_late ?? g.content_score;
+      const absolute = g.mapped_score;
+      const raw = absolute ?? g.score_after_late ?? g.content_score;
       const ok = cats.has(c) &&
-        score !== null && score !== undefined && g.state === "TURNED_IN";
-      if (ok) remaining.set(normName(g.name), { score, name: g.name, category: c });
+        raw !== null && raw !== undefined && g.state === "TURNED_IN";
+      const score = absolute !== null && absolute !== undefined ? absolute :
+        (scale ? Math.round((raw / 3) * maxPoints) : raw);
+      const held = String(g.flags || "").includes("demoted_from_3");
+      if (ok) remaining.set(normName(g.name), { score, name: g.name, category: c, held });
     });
     return remaining;
+  }
+
+  // 満点が3以外なら換算中である旨をログに出す
+  function logScaleInfo(maxPoints) {
+    if (maxPoints && maxPoints !== 3) {
+      log(`この課題は${maxPoints}点満点: 3点スケールから換算して入力します(例: 2点→${Math.round(2 / 3 * maxPoints)}点)`);
+    }
   }
 
   // 下書き入力
@@ -249,8 +264,10 @@
   }
 
   // 下書きのみ投入(返却しない)。対象は全員(確定組+要確認組)
-  async function runDraftAll(cw) {
-    const targets = buildTargets(await fetchGrades(cw), ALL_CATS);
+  async function runDraftAll(course, cw) {
+    const data = await fetchGrades(course, cw);
+    logScaleInfo(data.max_points);
+    const targets = buildTargets(data.grades, ALL_CATS, data.max_points);
     log(`下書き入力対象(全員・未返却): ${targets.size}件`);
     const r = await inputDrafts(targets);
     log(`下書き入力完了: 確定${r.done}` +
@@ -259,23 +276,34 @@
   }
 
   // 確定組(auto_0/1/2/3)のみ下書き入力→選択→返却(完全自動)
-  async function runConfirmedReturn(cw) {
-    const targets = buildTargets(await fetchGrades(cw), RETURN_CATS);
-    log(`確定対象(要確認以外・未返却): ${targets.size}件`);
+  // demoted_from_3フラグ付き(held)は下書きのみ入れ、返却対象から外す(満点取り逃がしの抜き取り確認用)
+  async function runConfirmedReturn(course, cw) {
+    const data = await fetchGrades(course, cw);
+    logScaleInfo(data.max_points);
+    const targets = buildTargets(data.grades, RETURN_CATS, data.max_points);
+    const heldTargets = new Map([...targets].filter(([, t]) => t.held));
+    const returnTargets = new Map([...targets].filter(([, t]) => !t.held));
+    log(`確定対象(要確認以外・未返却): ${targets.size}件` +
+      (heldTargets.size ? `(うち${heldTargets.size}件はdemoted_from_3のため下書きのみ・返却保留)` : ""));
     if (targets.size === 0) { log("対象なし。終了"); return; }
 
-    const names = [...targets.values()].map((t) => t.name);
+    const names = [...returnTargets.values()].map((t) => t.name);
     const ok = confirm(
-      `【確定のみ入力】${targets.size}人(要確認以外)を下書き入力し、その生徒だけを選択して「返却」します。\n` +
+      `【確定のみ入力】${targets.size}人(要確認以外)を下書き入力し、うち${returnTargets.size}人を選択して「返却」します。\n` +
+      (heldTargets.size ? `※${heldTargets.size}人は3点評価からの降格(demoted_from_3)のため下書きのみ入れ、返却しません。\n` : "") +
       `→ 生徒に成績が公開されます(取り消せません)。\n` +
       `例: ${names.slice(0, 6).join("、")}${names.length > 6 ? " ほか" : ""}\n\n続行しますか?`);
     if (!ok) { log("中止しました"); return; }
 
-    // ① 下書き入力
+    // ① 下書き入力(保留分も含めて全員に入れる)
     log("① 下書き入力中…");
     const ir = await inputDrafts(new Map(targets));
     if (ir.fail) { log("入力に失敗。返却を中止(下書きは保持)"); return; }
     log(`① 完了: 入力${ir.done} / 既存${ir.skip} / 未照合${ir.left}`);
+    if (heldTargets.size) {
+      log(`返却保留(要抜き取り確認): ${[...heldTargets.values()].map((t) => t.name).join("、")}`);
+    }
+    if (returnTargets.size === 0) { log("返却対象なし(全員保留)。下書きのみで終了"); return; }
 
     // ガード: 既にチェックが入っている欄があれば誤返却防止で中止
     const preChecked = [...document.querySelectorAll(SEL.rowCheckbox)].filter(isChecked);
@@ -284,9 +312,9 @@
       return;
     }
 
-    // ② 対象の生徒だけ選択
+    // ② 対象の生徒だけ選択(返却保留分は選択しない)
     log("② 対象の生徒だけ選択中…");
-    const sr = await selectCheckboxes(new Map(targets));
+    const sr = await selectCheckboxes(new Map(returnTargets));
     if (sr.fail) { log("選択に失敗。返却を中止(何も返却していません)"); return; }
     if (sr.left > 0) {
       log(`!! ${sr.left}人を選択できず。返却を中止(全員選択できた時だけ返却します)`);
@@ -296,7 +324,7 @@
     log(`② 完了: ${sr.done + sr.skip}人を選択`);
 
     // ③ 返却
-    if (!confirm(`選択した ${targets.size}人 を返却します。最終確認・よろしいですか?`)) {
+    if (!confirm(`選択した ${returnTargets.size}人 を返却します。最終確認・よろしいですか?`)) {
       log("返却を中止(選択は残っています。手動で解除してください)");
       return;
     }
@@ -307,21 +335,8 @@
       log("   → SEL.returnButton / SEL.dialog をライブDOMに合わせて調整してください");
       return;
     }
-    log(`✔ 確定完了: ${targets.size}人に返却を実行。画面で「返却済み」を目視確認してください`);
-  }
-
-  async function runDeleteAll(cw) {
-    const remaining = buildTargets(await fetchGrades(cw), ALL_CATS);
-    log(`削除対象(未返却のみ): 最大${remaining.size}件`);
-    const r = await sweep(remaining, SEL.anyGradeButton, async (btn, t, name) => {
-      const res = await clearGrade(btn, name);
-      if (res === "skip") { btn.style.outline = "2px dashed #999"; return "skip"; }
-      if (res) { btn.style.outline = "2px solid #ff9800"; return "done"; }
-      btn.style.outline = "2px solid #e53935";
-      log(`!! 削除できず: ${t.name}。中断`);
-      return "fail";
-    });
-    log(`全削除完了: 削除${r.done} / 元々空${r.skip} / 未照合${r.left} / 失敗${r.fail}`);
+    log(`✔ 確定完了: ${returnTargets.size}人に返却を実行。画面で「返却済み」を目視確認してください` +
+      (heldTargets.size ? ` / ${heldTargets.size}人は下書きのみ(返却保留)` : ""));
   }
 
   function log(msg) {
@@ -353,11 +368,12 @@
       "font:12px sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.2);width:300px";
 
     const title = document.createElement("b");
-    title.textContent = "Classroom Grader v4";
+    title.textContent = "Classroom Grader v5";
     p.appendChild(title);
 
     const apiInput = field(p, "API:", "cga-api", "215px", "https://xxx.trycloudflare.com");
-    const tokenInput = field(p, "token:", "cga-token", "205px", "api.tokenと同じ値");
+    const tokenInput = field(p, "token:", "cga-token", "205px", "integration.tokenと同じ値");
+    const courseInput = field(p, "courseId:", "cga-course", "150px", "");
     const cwInput = field(p, "courseWorkId:", "cga-cw", "150px", "");
 
     const btnRow = document.createElement("div");
@@ -372,13 +388,9 @@
     btnRow.appendChild(confirmBtn);
     p.appendChild(btnRow);
 
-    const btnRow2 = document.createElement("div");
-    btnRow2.style.marginTop = "6px";
-    const delBtn = document.createElement("button");
-    delBtn.textContent = "下書き全削除";
-    delBtn.style.cssText = "color:#fff;background:#b00";
-    btnRow2.appendChild(delBtn);
-    p.appendChild(btnRow2);
+    const safety = document.createElement("p");
+    safety.textContent = "人間が入力した下書きを保護するため、一括削除機能は無効です。";
+    p.appendChild(safety);
 
     const logEl = document.createElement("pre");
     logEl.id = "cga-log";
@@ -393,18 +405,14 @@
     apiInput.onchange = () => localStorage.setItem("cga_api_base", apiInput.value.trim());
     tokenInput.onchange = () => localStorage.setItem("cga_api_token", tokenInput.value.trim());
 
+    const course = () => courseInput.value.trim();
     const cw = () => cwInput.value.trim();
     draftAllBtn.onclick = () => {
       if (confirm("未返却の全員(要確認含む)に下書き入力します(返却しません)。続行しますか?"))
-        runDraftAll(cw()).catch((e) => log("ERROR: " + e.message));
+        runDraftAll(course(), cw()).catch((e) => log("ERROR: " + e.message));
     };
     confirmBtn.onclick = () =>
-      runConfirmedReturn(cw()).catch((e) => log("ERROR: " + e.message));
-    delBtn.onclick = () => {
-      if (confirm("未返却の生徒の下書き点をすべて削除します(返却済みには触れません)。よろしいですか?") &&
-        confirm("本当に削除しますか? この操作で下書きが空に戻ります。"))
-        runDeleteAll(cw()).catch((e) => log("ERROR: " + e.message));
-    };
+      runConfirmedReturn(course(), cw()).catch((e) => log("ERROR: " + e.message));
   }
 
   const iv = setInterval(() => { if (document.body) { buildPanel(); clearInterval(iv); } }, 1000);

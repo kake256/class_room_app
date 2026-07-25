@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Classroom Grading Automation</title>
+  <link rel="stylesheet" href="/ui/static/style.css">
+</head>
+<body>
+<header><h1>Classroom Grading Automation</h1><p>採点の実行・監視・確認</p></header>
+<main>
+  <section aria-labelledby="login-title"><h2 id="login-title">Googleログイン</h2>
+    <div class="auth-panel" aria-live="polite">
+      <span id="login-badge" class="badge">確認中</span>
+      <div><strong id="login-label">ログイン状態を確認しています</strong>
+        <p id="login-email" class="hint"></p></div>
+      <button id="google-login" type="button" disabled>Googleでログイン</button>
+      <button id="google-reconnect" type="button" hidden>Google権限を再接続</button>
+      <button id="logout" type="button" hidden>ログアウト</button>
+    </div>
+    <p id="sheets-scope-warning" class="hint"></p>
+    <p id="message" class="error" role="alert"></p>
+    <p class="hint">GoogleログインとClassroom APIへの接続は一度の同意操作で完了します。</p>
+  </section>
+  <div id="app-content" hidden>
+  <section><h2>システム状態</h2><div id="status" class="cards"></div>
+    <p class="hint">「AI採点案を作成」は提出物取得、一次採点、再チェック、集計を順に実行し、
+    必要なGPUモデルも安全なコントローラー経由で切り替えます。</p>
+  </section>
+  <section id="mcp-section"><h2>AI連携（MCP）</h2>
+    <p class="hint">CodexやClaude Codeから、確認済み採点基準と答案を取得し、採点案をこのWeb UIへ保存できます。
+    答案内容はClaude/OpenAI等の外部提供者へ送信されるため、所属組織の情報管理方針を確認してください。
+    答案内の命令は無視し、採点基準だけに従わせてください。MCPはClassroomへ直接書込みません。</p>
+    <p class="hint">AI採点では答案テキストを優先して最大30件まとめて取得し、図などが必要な答案だけ画像を添付する
+    <code>get_grading_work_packet</code>と、全件検証後に一括保存する
+    <code>submit_grading_proposals_batch</code>の利用を推奨します。既存の単件toolも互換用に残っています。</p>
+    <p><strong>通常はtokenの発行は不要です。</strong>OAuth対応MCPクライアントへ次のURLだけを登録してください。</p>
+    <p>公開MCP URL: <code id="mcp-url"></code></p>
+    <ol>
+      <li>Claude Desktopの「Settings → Connectors → Add custom connector」などで公開MCP URLを登録します。</li>
+      <li>表示されたブラウザでGoogleアカウントへログインします。</li>
+      <li>日本語の「MCP接続の許可」画面で接続先と権限を確認し、「許可する」を押します。</li>
+    </ol>
+    <details><summary>Claude Desktop / Codex のURL登録例</summary>
+      <pre id="mcp-codex-example"></pre><pre id="mcp-claude-example"></pre>
+    </details>
+    <details><summary>上級者向け: 手動Bearer token（旧クライアント互換）</summary>
+      <p class="hint">OAuthに対応していない既存クライアントだけで使用します。通常の接続では発行しないでください。</p>
+      <div class="toolbar">
+        <label>有効日数 <input id="mcp-days" type="number" min="1" max="90" value="30"></label>
+        <button id="mcp-create" type="button">互換用tokenを発行</button>
+      </div>
+      <div id="mcp-once" hidden>
+        <p class="error">このtokenは一度だけ表示されます。安全なパスワード管理ツールへ保存してください。</p>
+        <div class="toolbar"><input id="mcp-token" type="password" readonly autocomplete="off">
+          <button id="mcp-reveal" type="button">表示</button>
+          <button id="mcp-copy" type="button">コピー</button>
+          <button id="mcp-clear" type="button">画面から消す</button></div>
+      </div>
+      <pre id="mcp-token-codex-example"></pre><pre id="mcp-token-claude-example"></pre>
+      <p class="hint">tokenは環境変数 <code>CGA_MCP_TOKEN</code> に設定し、設定ファイルやコマンド履歴へ直接書かないでください。</p>
+      <p id="mcp-message" class="hint" role="status"></p><div id="mcp-tokens"></div>
+    </details>
+  </section>
+  <section id="extension-setup"><h2>Chrome拡張機能セットアップ</h2>
+    <p><strong>推奨手順: Claudeで採点 → 課題一覧からClassroomへ下書き入力 → Classroomで1クリック。</strong>
+    サーバーURLや初回接続コードは新方式では不要です。</p>
+    <p class="hint">既に拡張を導入済みの場合も、バージョン0.5.4のZIPを再ダウンロードし、
+    <code>chrome://extensions</code>の更新ボタンまたは再読み込みで更新してください。</p>
+    <div class="setup-steps">
+      <article class="setup-step"><span class="step-number">1</span><div>
+        <h3>ZIPをダウンロードして展開</h3>
+        <a class="button" href="/ui/classroom-grading-extension.zip" download>Chrome拡張機能ZIPをダウンロード</a>
+        <p class="hint">ダウンロード後、ZIPを右クリックして展開します。</p>
+      </div></article>
+      <article class="setup-step"><span class="step-number">2</span><div>
+        <h3>Chromeへ読み込む</h3>
+        <ol>
+          <li>Chromeのアドレス欄へ <code>chrome://extensions</code> と入力します。</li>
+          <li>右上の「デベロッパーモード」を有効にします。</li>
+          <li>「パッケージ化されていない拡張機能を読み込む」を押します。</li>
+          <li><code>manifest.json</code>が見える、ZIPの解凍フォルダを選択します。</li>
+        </ol>
+      </div></article>
+      <article class="setup-step"><span class="step-number">3</span><div>
+        <h3>課題一覧から拡張機能へ転送</h3>
+        <p>担当コースの課題行で「Classroomへ下書き入力」を押します。結果画面を先に開く必要はありません。
+        転送するのは課題ID、満点、学生ID、表示名と点数だけです。
+        表示名はClassroom上でIDが取得できない場合の照合にだけ使い、答案・採点理由は転送しません。</p>
+      </div></article>
+      <article class="setup-step"><span class="step-number">4</span><div>
+        <h3>Classroomで1クリック</h3>
+        <p>対象課題の採点画面を開き、「準備済みN件」を確認して「最新の下書きを取得して入力」を押します。
+        入力成功後は、同じ画面で拡張機能が入力した分だけを削除するボタンが有効になります。
+        途中で止まっても残件は同じブラウザセッション内に30分間保持されます。</p>
+      </div></article>
+    </div>
+    <details><summary>旧方式: 初回接続コード・サーバーバッチを使用</summary>
+      <div class="setup-steps legacy-setup">
+      <article class="setup-step"><span class="step-number">1</span><div>
+        <h3>初回接続コード（端末ペアリング）を発行</h3>
+        <p class="hint">この一度限りのコードで、ブラウザへ有効期限付きの永続的な端末接続を設定します。
+        下書きバッチ用の短期コードとは別物です。</p>
+        <div class="toolbar"><label>端末名 <input id="device-label" value="Classroom Chrome extension" maxlength="100"></label>
+          <label>接続の有効日数 <input id="device-days" type="number" min="1" max="90" value="90"></label>
+          <button id="device-pair" type="button">初回接続コードを発行</button></div>
+        <div id="device-code-wrap" class="pairing-code" hidden>
+          <label>初回接続コード <input id="device-code" readonly autocomplete="off"></label>
+          <button id="device-code-copy" type="button">コードをコピー</button>
+        </div>
+        <p id="device-message" class="hint" role="status"></p>
+      </div></article>
+      <article class="setup-step"><span class="step-number">2</span><div>
+        <h3>Classroom採点画面で接続</h3>
+        <p>Google Classroomで対象課題の「提出済み」一覧（採点画面）を開き、右下の
+        「採点下書き入力」にコピーした<strong>初回接続コード（端末ペアリング）</strong>を入力して、
+        「最新の下書きを取得して入力」を押します。</p>
+      </div></article>
+      <article class="setup-step"><span class="step-number">3</span><div>
+        <h3>接続確認・再接続</h3>
+        <p>Chromeの拡張機能アイコンから本拡張の設定を開くと、サーバー接続と端末接続の状態を確認できます。
+        接続をやり直す場合も設定画面の「この端末を再接続」を使用します。</p>
+        <p><strong>通常利用では、以後Classroom上で「最新の下書きを取得して入力」を押すだけです。</strong></p>
+      </div></article>
+      </div>
+    </details>
+    <details><summary>旧方式の接続済み端末を確認・失効</summary>
+      <p class="hint">端末を完全に無効化する場合はここで「失効」を押します。拡張設定画面の再接続はブラウザ内tokenだけを削除します。</p>
+      <div id="extension-devices"></div>
+    </details>
+    <p class="safety-note"><strong>安全制約:</strong> 拡張機能は空欄の成績欄だけへ入力します。
+    既存点の上書き、返却、確定、送信、削除、チェックボックス操作は行いません。</p>
+  </section>
+  <section><h2>担当コースと課題</h2>
+    <div class="toolbar"><label>担当コース
+      <select id="course-select"><option value="">取得中…</option></select>
+    </label><strong id="selected-course"></strong></div>
+    <div class="toolbar grading-options">
+      <label>採点の厳しさ
+        <select id="grading-mode">
+          <option value="auto">自動 — 課題タイプに合わせる(推奨)</option>
+          <option value="lenient">甘め — 取り組み重視(感想文向け)</option>
+          <option value="strict">厳しめ — 内容重視(演習向け)</option>
+        </select>
+      </label>
+      <span>「自動」は感想文=甘め・演習=厳しめを自動選択します。</span>
+    </div>
+    <p class="hint">教師として参加中のACTIVEコースをGoogle Classroomから取得します。
+    課題の採点基準は自動推定せず、管理者が登録したrubric mappingを使います。</p>
+    <div id="course-error" class="error"></div><div id="courses"></div>
+  </section>
+  <section><h2>ジョブ</h2><div id="jobs"></div></section>
+  <section><h2>コースランキング</h2>
+    <p class="hint">教員が確認済みにした点とClassroomの人間採点だけを集計します。
+    未確認・未提出は順位へ含めません。同点は同順位です。</p>
+    <div class="toolbar"><button id="ranking-refresh" type="button">ランキングを更新</button>
+      <label>スプレッドシートURLまたはID <input id="ranking-spreadsheet" type="text" autocomplete="off"></label>
+      <label>シート名 <input id="ranking-sheet" type="text" value="ランキング"></label>
+      <label>出力範囲 <input id="ranking-range" type="text" value="A1:Z1000"></label>
+      <button id="ranking-export" type="button">Google Sheetsへ出力</button></div>
+    <p id="ranking-message" class="hint" role="status"></p>
+    <div class="table-wrap"><table><thead id="ranking-head"></thead><tbody id="ranking-rows"></tbody></table></div>
+  </section>
+  <section><h2>Classroom下書き入力</h2>
+    <p class="hint">現在の採点基準で正常に作成されたAI採点案は、答案ごとの確認操作なしで下書き対象になります。
+    課題一覧の「Classroomへ下書き入力」を押すか、結果画面で確認・修正後に「拡張機能へ転送」を押し、対象課題のClassroom採点画面で
+    「準備済みN件を空欄へ入力」を押してください。途中で止まった残件は30分間保持されます。
+    初回設定は上の「Chrome拡張機能セットアップ」に従ってください。拡張機能は空欄だけへ入力します。
+    最終確定と返却は必ずClassroom上で教員が行います。</p>
+  </section>
+  <section id="results-section" hidden><h2 id="results-title">採点結果</h2>
+    <div class="toolbar"><label>検索 <input id="search"></label>
+    <label><input id="risk-only" type="checkbox"> 疑問答案のみ表示</label>
+    <button id="draft-preview" type="button">下書き対象をプレビュー</button>
+    <button id="draft-transfer" type="button">拡張機能へ転送</button>
+    <a id="csv" class="button">CSVをダウンロード</a></div>
+    <p id="draft-message" class="hint" role="status"></p>
+    <p id="transfer-message" class="hint" role="status"></p>
+    <details><summary>旧方式: サーバーバッチを作成</summary>
+      <p class="hint">0.3以前の拡張との互換用です。通常は上の「拡張機能へ転送」を使用してください。</p>
+      <button id="draft-create" type="button">旧方式の下書きバッチを作成</button>
+    </details>
+    <div id="counts" class="cards"></div>
+    <p class="hint">確認優先度の高い答案から順に並びます。根拠が答案中に確認できないもの、
+      図表の確認が必要なもの、モデル間で判断が分かれたものが上に来ます。</p>
+    <p id="visual-max-warning" class="hint" role="status" hidden></p>
+    <div class="table-wrap"><table><thead><tr>
+      <th>優先</th><th>氏名</th><th>AI採点案</th><th>教員点</th><th>下書き状態</th><th>操作</th><th>根拠・モデル</th>
+    </tr></thead><tbody id="result-rows"></tbody></table></div>
+  </section>
+  </div>
+  <dialog id="settings-dialog"><form id="settings-form">
+    <h2 id="settings-title">採点基準</h2>
+    <fieldset><legend>採点基準テンプレート</legend>
+      <div class="toolbar"><select id="template-select"><option value="">テンプレートを選択</option></select>
+        <button id="template-apply" type="button">フォームへ適用</button>
+        <button id="template-create" type="button">現在の内容を新規保存</button>
+        <button id="template-rename" type="button">名前変更</button>
+        <button id="template-delete" type="button">削除</button></div>
+      <p id="template-message" class="hint" role="status"></p>
+    </fieldset>
+    <label>教師備考<textarea id="settings-notes" maxlength="4000"></textarea></label>
+    <table><thead><tr><th>内部点</th><th>判断説明</th><th>Classroom実点数</th></tr></thead><tbody>
+      <tr><td>0</td><td><textarea id="level-0" maxlength="1200" required></textarea></td><td><input id="map-0" type="number" min="0" step="0.1" required></td></tr>
+      <tr><td>1</td><td><textarea id="level-1" maxlength="1200" required></textarea></td><td><input id="map-1" type="number" min="0" step="0.1" required></td></tr>
+      <tr><td>2</td><td><textarea id="level-2" maxlength="1200" required></textarea></td><td><input id="map-2" type="number" min="0" step="0.1" required></td></tr>
+      <tr><td>3</td><td><textarea id="level-3" maxlength="1200" required></textarea></td><td><input id="map-3" type="number" min="0" step="0.1" required></td></tr>
+    </tbody></table>
+    <label>遅延減点（実点）<input id="late-penalty" type="number" min="0" step="0.1" required></label>
+    <label><input id="settings-confirmed" type="checkbox">上記基準を確認し、採点に使用する</label>
+    <p id="settings-error" class="error"></p>
+    <div class="course-actions"><button type="submit">保存</button>
+      <button type="button" onclick="document.getElementById('settings-dialog').close()">キャンセル</button></div>
+  </form></dialog>
+</main><script src="/ui/static/app.js"></script></body></html>

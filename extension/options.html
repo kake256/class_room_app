@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Classroom採点下書き入力 設定</title>
+<style>
+  :root{font:15px system-ui,sans-serif;color:#202124;background:#f6f8fc}
+  body{max-width:680px;margin:32px auto;padding:0 16px}main{background:#fff;padding:24px;border-radius:12px;box-shadow:0 1px 5px #ccd2dc}
+  h1{margin-top:0}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions button{width:auto}
+  label,input,button{display:block}input{width:100%;box-sizing:border-box;padding:9px;margin:8px 0}button{padding:9px 16px;cursor:pointer}
+  .hint{color:#5f6368;line-height:1.6}.safety{padding:12px;background:#eef4ff;border-left:4px solid #2457a7}
+  #status{margin:16px 0;padding:12px;border-radius:8px;background:#eef1f5;white-space:pre-wrap}
+  #status.success{background:#e4f5e8;color:#17652b}#status.warning{background:#fff2d6;color:#754f00}#status.error{background:#fbe4e2;color:#9c1c13}
+  details{margin-top:20px}summary{cursor:pointer;font-weight:600}
+</style>
+<main>
+  <h1>Classroom採点下書き入力</h1>
+  <p><strong>通常はWeb UIの「拡張機能へ転送」を使うため、サーバーURLや端末接続は不要です。</strong>
+  Classroom採点画面で「準備済みN件を空欄へ入力」を押してください。</p>
+  <p class="hint">以下のサーバー・端末接続状態は、初回接続コードとサーバーバッチを使う旧方式向けです。</p>
+  <div id="status" class="warning" role="status" aria-live="polite">接続状態を確認しています…</div>
+  <div class="actions">
+    <button id="check" type="button">接続状態を再確認</button>
+    <button id="unpair" type="button">この端末を再接続</button>
+  </div>
+  <p class="hint">「再接続」はこのブラウザ内の端末tokenだけを削除します。実行前に確認します。
+  サーバー側の端末を完全に失効する場合はWeb UIの端末一覧で「失効」を押してください。</p>
+  <p class="safety"><strong>安全制約:</strong> 利用者がClassroom上でボタンを押した時だけ通信し、
+  空欄の成績欄だけへ入力します。既存点の上書き、返却、確定、送信は行いません。
+  削除は同じ画面で拡張機能が入力し、現在値が変わっていない下書きだけに限定します。</p>
+  <details>
+    <summary>管理者向け: 接続先URLを変更</summary>
+    <p class="hint">通常は変更しません。公開サーバーのoriginだけを入力し、<code>/ui</code>や<code>/mcp</code>は付けません。
+    保存済みのURLがある場合はその値を維持します。</p>
+    <label>サーバーURL<input id="server" type="url" placeholder="https://classroom-grader-1.tail80e540.ts.net"></label>
+    <button id="save" type="button">保存して接続を許可</button>
+  </details>
+</main>
+<script src="core.js"></script><script src="options.js"></script>
+</html>

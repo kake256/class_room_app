@@ -91,6 +91,19 @@ def calibrate(cfg: Config, sample_dir: str, truth_csv: str, model: str | None = 
     print(f"CSV: {out}")
 
 
+def _coursework_max_points(cfg: Config, coursework_id: str) -> float | None:
+    """課題の満点(maxPoints)をClassroomから取得。失敗時はNone(換算なし)。"""
+    from .fetch import _course_id, get_services
+
+    try:
+        classroom, _ = get_services(cfg)
+        cw = classroom.courses().courseWork().get(
+            courseId=_course_id(cfg), id=coursework_id).execute()
+        return float(cw["maxPoints"]) if cw.get("maxPoints") else None
+    except (Exception, SystemExit):  # noqa: BLE001 認証なし等は従来動作(換算なし)に倒す
+        return None
+
+
 def verify_coursework(
     cfg: Config, coursework_id: str, truth_csv: str | None = None, force: bool = False,
     lenient: bool | None = None,
@@ -124,6 +137,13 @@ def verify_coursework(
                 "Classroom に確定済み成績(assignedGrade)がありません。--truth CSV を指定してください"
             )
         df["human_score"] = df["student_id"].map(grades)
+        # 満点が3点以外の課題(100点・5点等)は人間の確定点を3点スケールに換算する。
+        # 換算しないと比較が無意味になる(実例: 100点課題でbias -82と誤診)
+        max_points = _coursework_max_points(cfg, coursework_id)
+        if max_points and max_points != 3:
+            df["human_score_raw"] = df["human_score"]
+            df["human_score"] = (df["human_score"] / max_points * 3).round()
+            print(f"(注: この課題は{max_points:g}点満点。人間の確定点を3点スケールに換算して比較する)")
 
     print(f"\n=== 過去課題検証 (courseWorkId={coursework_id}) ===")
     both = df.dropna(subset=["human_score", "content_score"]).copy()
