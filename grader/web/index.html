@@ -190,21 +190,23 @@
   </div>
   <div id="panel-grading-3" role="tabpanel" aria-labelledby="tab-grading">
   <section><h2>コースランキング</h2>
-    <p class="hint">教員が確認済みにした点とClassroomの人間採点だけを集計します。
-    未確認・未提出は順位へ含めません。同点は同順位です。</p>
+    <p class="hint">教員が確認済みにした点とClassroomの確定点だけを集計します。
+    各課題を満点で正規化した平均点で順位を決め、未提出は「3点満点中の−1点」と同じ比重で減点します。
+    提出済みで未確定の課題は平均点の母数に含めません。同点は最高点回数の多い方が上位です。</p>
     <div class="toolbar"><button id="ranking-refresh" type="button">ランキングを更新</button>
       <label>スプレッドシートURLまたはID <input id="ranking-spreadsheet" type="text" autocomplete="off"></label>
       <label>シート名 <input id="ranking-sheet" type="text" value="ランキング"></label>
       <label>出力範囲 <input id="ranking-range" type="text" value="A1:Z1000"></label>
       <button id="ranking-export" type="button">Google Sheetsへ出力</button></div>
     <p id="ranking-message" class="hint" role="status"></p>
-    <div id="ranking-wrap" class="table-wrap" hidden><table class="ranking-table"><thead id="ranking-head"></thead><tbody id="ranking-rows"></tbody></table></div>
     <details id="ranking-detail" hidden>
       <summary>課題ごとの点数内訳を表示</summary>
-      <p class="hint">「—」は確定点がまだない課題です。課題名は省略表示されます（カーソルを合わせると全文が出ます）。</p>
+      <p class="hint">「−1」は未提出（ペナルティ対象）、「—」は提出済みだが確定点がまだない課題です。
+      課題名は省略表示されます（カーソルを合わせると全文が出ます）。</p>
       <div class="table-wrap"><table class="ranking-table"><thead id="ranking-detail-head"></thead>
         <tbody id="ranking-detail-rows"></tbody></table></div>
     </details>
+    <div id="ranking-wrap" class="table-wrap" hidden><table class="ranking-table"><thead id="ranking-head"></thead><tbody id="ranking-rows"></tbody></table></div>
   </section>
   <section><h2>Classroom下書き入力</h2>
     <p class="hint">現在の採点基準で正常に作成されたAI採点案は、答案ごとの確認操作なしで下書き対象になります。

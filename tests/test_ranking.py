@@ -98,3 +98,62 @@ def test_ranking_top_score_counts_ties_for_every_holder():
         ]},
     ])
     assert all(row.top_score_count == 1 for row in table.rows)
+
+
+def test_missing_penalty_and_normalized_average_decide_the_rank():
+    """未提出はペナルティ、順位は満点で正規化した平均点で決まる。"""
+    from grader.ranking import MISSING_PENALTY_RATE
+
+    table = build_ranking([
+        {"coursework_id": "1", "title": "小課題", "max_points": 3, "rows": [
+            {"student_id": "a", "name": "A", "source": "human", "mapped_score": 3},
+            {"student_id": "b", "name": "B", "source": "human", "mapped_score": 3},
+        ]},
+        {"coursework_id": "2", "title": "大課題", "max_points": 100, "rows": [
+            {"student_id": "a", "name": "A", "source": "human", "mapped_score": 50},
+            {"student_id": "b", "name": "B", "category": "not_submitted"},
+        ]},
+    ])
+    by_id = {row.student_id: row for row in table.rows}
+    # 満点が違っても比率で扱う: A = (3/3 + 50/100) / 2 = 0.75
+    assert by_id["a"].average_rate == 0.75
+    # Bは未提出でペナルティ: (3/3 + (-1/3)) / 2
+    assert by_id["b"].average_rate == (1 + MISSING_PENALTY_RATE) / 2
+    assert by_id["a"].rank == 1 and by_id["b"].rank == 2
+    # 確定点合計だけならB(3点)よりA(53点)が上だが、順位は比率で決まる
+    assert by_id["a"].total == 53 and by_id["b"].total == 3
+    # 未提出は列ごとに識別できる(未確定と区別して表示するため)
+    assert by_id["b"].not_submitted_flags == (False, True)
+
+
+def test_unconfirmed_answers_are_excluded_from_the_average_denominator():
+    """提出済みで未確定の課題は平均点の母数に入れない(不当な減点を避ける)。"""
+    table = build_ranking([
+        {"coursework_id": "1", "title": "確定済み", "max_points": 10, "rows": [
+            {"student_id": "a", "name": "A", "source": "human", "mapped_score": 8},
+        ]},
+        {"coursework_id": "2", "title": "未確定", "max_points": 10, "rows": [
+            {"student_id": "a", "name": "A", "source": "system", "mapped_score": 10},
+        ]},
+    ])
+    row = table.rows[0]
+    assert row.average_rate == 0.8      # 未確定を0点扱いにしない
+    assert row.evaluated_count == 1 and row.unconfirmed_count == 1
+    assert row.not_submitted_count == 0
+
+
+def test_ties_are_broken_by_top_score_count():
+    """平均点が同率なら最高点回数の多い方を上位にする。"""
+    table = build_ranking([
+        {"coursework_id": "1", "title": "課題1", "max_points": 10, "rows": [
+            {"student_id": "a", "name": "A", "source": "human", "mapped_score": 10},
+            {"student_id": "b", "name": "B", "source": "human", "mapped_score": 6},
+        ]},
+        {"coursework_id": "2", "title": "課題2", "max_points": 10, "rows": [
+            {"student_id": "a", "name": "A", "source": "human", "mapped_score": 6},
+            {"student_id": "b", "name": "B", "source": "human", "mapped_score": 10},
+        ]},
+    ])
+    # 平均は同じ0.8だが、同点最高点なので両者とも最高点回数2で同率1位
+    assert [(row.student_id, row.rank) for row in table.rows] == [("a", 1), ("b", 1)]
+    assert all(row.average_rate == 0.8 for row in table.rows)

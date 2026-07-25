@@ -11,10 +11,15 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 
+# 未提出のペナルティ。「3点満点中の-1点」と同じ比重(GAS版の採点方式に合わせる)。
+MISSING_PENALTY_RATE = -1 / 3
+
+
 @dataclass(frozen=True)
 class CourseworkColumn:
     coursework_id: str
     title: str
+    max_points: float | None = None
 
 
 @dataclass(frozen=True)
@@ -30,6 +35,13 @@ class RankedStudent:
     submitted_count: int = 0
     top_score_count: int = 0
     not_submitted_count: int = 0
+    # 満点で正規化した平均点(未提出はMISSING_PENALTY_RATE)。順位はこの値で決まる。
+    average_rate: float = 0.0
+    # 判定できた課題数(確定点あり + 未提出)。未確定は母数へ入れない。
+    evaluated_count: int = 0
+    unconfirmed_count: int = 0
+    # 列ごとに「未提出」かどうか(未確定と区別して表示するため)
+    not_submitted_flags: tuple[bool, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -100,7 +112,13 @@ def build_ranking(
         if not coursework_id or coursework_id in seen_courseworks:
             raise ValueError("coursework_id must be non-empty and unique")
         seen_courseworks.add(coursework_id)
-        columns.append(CourseworkColumn(coursework_id, str(coursework.get("title") or coursework_id)))
+        max_points = coursework.get("max_points")
+        try:
+            max_points = float(max_points) if max_points is not None else None
+        except (TypeError, ValueError):
+            max_points = None
+        columns.append(CourseworkColumn(
+            coursework_id, str(coursework.get("title") or coursework_id), max_points))
         reviews = coursework.get("reviews") or {}
         if not isinstance(reviews, Mapping):
             raise ValueError("reviews must be a mapping")
@@ -139,34 +157,66 @@ def build_ranking(
             if current is None or value > current:
                 best_by_coursework[coursework_id] = value
 
-    sortable: list[tuple[str, str, float, int, tuple[float | None, ...], int, int, int]] = []
+    entries: list[dict[str, Any]] = []
     for student_id, student in students.items():
         values = tuple(scores_by_student[student_id].get(col.coursework_id) for col in columns)
+        missing_flags = tuple(
+            col.coursework_id in not_submitted_by_student[student_id] for col in columns)
         confirmed = tuple(value for value in values if value is not None)
         top_count = sum(
             1 for coursework_id, value in scores_by_student[student_id].items()
             if best_by_coursework.get(coursework_id) is not None
             and value >= best_by_coursework[coursework_id])
-        sortable.append((
-            student_id, student["name"], sum(confirmed), len(confirmed), values,
-            len(submitted_by_student[student_id]), top_count,
-            len(not_submitted_by_student[student_id])))
-    sortable.sort(key=lambda item: -item[2])
+        # 満点で正規化した比率を足す。未提出はペナルティ、未確定は母数へ入れない。
+        total_rate = 0.0
+        evaluated = 0
+        for column, value, missing in zip(columns, values, missing_flags):
+            if value is not None:
+                maximum = column.max_points
+                if maximum is None or maximum <= 0:
+                    # 満点が不明な課題は、受講者中の最高点を分母にして正規化する。
+                    # (満点が取れないと全員の平均が0になり順位が崩れるため)
+                    maximum = best_by_coursework.get(column.coursework_id)
+                if maximum is None or maximum <= 0:
+                    continue
+                total_rate += value / maximum
+                evaluated += 1
+            elif missing:
+                total_rate += MISSING_PENALTY_RATE
+                evaluated += 1
+        average_rate = (total_rate / evaluated) if evaluated else 0.0
+        entries.append({
+            "student_id": student_id, "name": student["name"],
+            "total": sum(confirmed), "confirmed_count": len(confirmed),
+            "values": values, "missing_flags": missing_flags,
+            "submitted": len(submitted_by_student[student_id]),
+            "top_count": top_count,
+            "missing": len(not_submitted_by_student[student_id]),
+            "average_rate": average_rate, "evaluated": evaluated,
+            "unconfirmed": max(0, len(submitted_by_student[student_id]) - len(confirmed)),
+        })
+    # 平均点の降順。同率なら最高点回数の多い方を上位にする(GAS版と同じ)。
+    entries.sort(key=lambda item: (-item["average_rate"], -item["top_count"]))
 
     ranked: list[RankedStudent] = []
-    prior_total: float | None = None
+    prior_key: tuple[float, int] | None = None
     prior_rank = 0
-    for position, item in enumerate(sortable, 1):
-        student_id, name, total, count, values, submitted, top_count, missing = item
-        rank = prior_rank if prior_total is not None and total == prior_total else position
+    for position, item in enumerate(entries, 1):
+        key = (item["average_rate"], item["top_count"])
+        rank = prior_rank if prior_key is not None and key == prior_key else position
         ranked.append(RankedStudent(
-            rank, student_id, name, total, count, values,
-            submitted_count=submitted, top_score_count=top_count,
-            not_submitted_count=missing))
-        prior_total, prior_rank = total, rank
+            rank, item["student_id"], item["name"], item["total"],
+            item["confirmed_count"], item["values"],
+            submitted_count=item["submitted"], top_score_count=item["top_count"],
+            not_submitted_count=item["missing"],
+            average_rate=item["average_rate"], evaluated_count=item["evaluated"],
+            unconfirmed_count=item["unconfirmed"],
+            not_submitted_flags=item["missing_flags"]))
+        prior_key, prior_rank = key, rank
     return RankingTable(tuple(columns), tuple(ranked), rank_style)
 
 
 __all__ = [
-    "CourseworkColumn", "RankedStudent", "RankingTable", "build_ranking",
+    "MISSING_PENALTY_RATE", "CourseworkColumn", "RankedStudent",
+    "RankingTable", "build_ranking",
 ]

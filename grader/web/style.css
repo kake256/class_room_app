@@ -48,3 +48,4 @@ button:disabled, .button.disabled {
   opacity: 0.45; cursor: not-allowed; background: #e2e8f0; color: #64748b;
   border-color: #cbd5e1;
 }
+.ranking-table td.missing-cell { color: #b91c1c; }

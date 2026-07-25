@@ -25,14 +25,21 @@ def sanitize_cell(value: Any) -> Any:
 
 def ranking_to_sheet_values(table: RankingTable) -> list[list[Any]]:
     """Build sanitized two-dimensional Sheets values from a ranking table."""
-    header: list[Any] = ["順位", "氏名", "確定点合計", "提出回数", "最高点回数",
-                         "未提出回数", "確定課題数"]
-    header.extend(column.title for column in table.courseworks)
+    header: list[Any] = ["順位", "氏名", "課題の平均点", "最高点回数", "提出数",
+                         "未提出数", "確定点合計", "確定課題数"]
+    header.extend(
+        f"{column.title} / {column.max_points:g}点" if column.max_points
+        else column.title
+        for column in table.courseworks)
     values: list[list[Any]] = [header]
     for row in table.rows:
-        values.append([row.rank, row.name, row.total, row.submitted_count,
-                       row.top_score_count, row.not_submitted_count,
-                       row.confirmed_count, *row.scores])
+        # 未提出は-1として出す(GAS版の表示に合わせる)。未確定は空欄。
+        cells = [-1 if missing else score
+                 for score, missing in zip(row.scores, row.not_submitted_flags or
+                                           (False,) * len(row.scores))]
+        values.append([row.rank, row.name, row.average_rate, row.top_score_count,
+                       row.submitted_count, row.not_submitted_count,
+                       row.total, row.confirmed_count, *cells])
     return [[sanitize_cell(cell) for cell in row] for row in values]
 
 

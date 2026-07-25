@@ -70,6 +70,7 @@ def client(tmp_path, monkeypatch):
         store, runner=lambda *a, **k: subprocess.CompletedProcess(a[0], 0, "ok", ""),
         token_resolver=lambda ref: tmp_path / "oauth_tokens" / f"{ref}.json",
     ))
+    api._ranking_cache.clear()  # テスト間でランキングキャッシュを共有しない
     monkeypatch.setattr(api, "_require_teacher_course", lambda *_args: {"id": "200000000001"})
     monkeypatch.setattr(api, "_require_coursework", lambda *_args: {
         "id": "100000000001", "maxPoints": 10,
@@ -1286,8 +1287,11 @@ def test_course_ranking_uses_only_confirmed_or_human_scores(client, tmp_path, mo
     assert [item["coursework_id"] for item in body["courseworks"]] == [
         "100000000001", "100000000002",
     ]
+    # 順位は満点で正規化した平均点で決まる。どちらも自分の課題で唯一の確定点
+    # (=その課題の最高点)なので平均1.0で同率1位になり、確定点合計は参考値。
     assert [(row["student_id"], row["rank"], row["total"], row["confirmed_count"])
-            for row in body["rows"]] == [("111", 1, 8.0, 1), ("222", 2, 7.0, 1)]
+            for row in body["rows"]] == [("111", 1, 8.0, 1), ("222", 1, 7.0, 1)]
+    assert all(row["average_rate"] == 1.0 for row in body["rows"])
     assert body["rows"][0]["scores"] == {
         "100000000001": 8.0, "100000000002": None,
     }
@@ -1776,6 +1780,7 @@ def test_ranking_reads_confirmed_grades_from_classroom(client, monkeypatch, tmp_
     scores = {row["student_id"]: row["total"] for row in body["rows"]}
     # Classroomのassigned_gradeが正本として反映される
     assert scores["111"] == 9.0 and scores["999"] == 7.0
+    assert body["cached"] is False
     assert csrf
 
 
@@ -1788,11 +1793,37 @@ def test_ranking_ui_separates_summary_from_per_coursework_scores():
     # 内訳は折りたたみの別表へ分離する
     assert 'id="ranking-detail"' in html and 'id="ranking-detail-head"' in html
     # 集計表の列
-    for label in ("提出回数", "最高点回数", "未提出回数"):
+    for label in ("課題の平均点", "最高点回数", "提出数", "未提出数", "未確定数"):
         assert label in js
     # 連続実行で見出しが重複しないよう、最新要求だけを描画する
     assert "let rankingRequestId=0;" in js
     assert "if(requestId!==rankingRequestId)return;" in js
     # DOM書き換えはawaitの後にまとめて行う
-    ranking = js[js.index("async function loadRanking(){"):js.index("async function exportRanking(){")]
+    ranking = js[js.index("async function loadRanking("):js.index("async function exportRanking(")]
     assert ranking.index("await api(") < ranking.index("head.replaceChildren()")
+
+
+def test_ranking_is_cached_and_refresh_bypasses_the_cache(client, monkeypatch):
+    """数分間は再集計せずキャッシュを返し、更新指定で破棄する。"""
+    calls = []
+    monkeypatch.setattr(api, "_classroom_for", lambda _identity: object())
+    monkeypatch.setattr(api, "_live_confirmed_grades",
+                        lambda *_a, **_k: calls.append(1) or {"111": 5.0})
+    monkeypatch.setattr("grader.fetch.list_courseworks",
+                        lambda *a, **k: [{"id": "100000000001", "title": "課題", "maxPoints": 10}])
+    csrf = login(client)
+
+    first = client.get("/api/v1/courses/200000000001/ranking").json()
+    assert first["cached"] is False and len(calls) == 1
+    # 2回目はキャッシュを返し、Classroomへ問い合わせない
+    second = client.get("/api/v1/courses/200000000001/ranking").json()
+    assert second["cached"] is True and len(calls) == 1
+    assert second["rows"] == first["rows"]
+    # refresh=trueなら再集計する
+    third = client.get("/api/v1/courses/200000000001/ranking?refresh=true").json()
+    assert third["cached"] is False and len(calls) == 2
+    # 教員が点数を確定するとキャッシュを破棄する
+    client.put("/api/v1/courses/200000000001/courseworks/100000000001/reviews/111",
+               headers={"X-CSRF-Token": csrf}, json={"score": 9, "confirmed": True})
+    after = client.get("/api/v1/courses/200000000001/ranking").json()
+    assert after["cached"] is False and len(calls) == 3

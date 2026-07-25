@@ -22,6 +22,8 @@ import math
 import pathlib
 import re
 import secrets
+import threading
+import time
 import os
 import zipfile
 from datetime import date
@@ -977,6 +979,40 @@ def v1_course_overview(
         raise HTTPException(status_code=409, detail="課題一覧を安全に合成できません。") from exc
 
 
+# ランキングは課題数ぶんのClassroom API呼び出しを伴うため短時間キャッシュする。
+# 採点直後の再集計を妨げないよう既定は数分で、refresh=trueで明示的に破棄できる。
+_RANKING_CACHE_TTL_SECONDS = float(_cfg.get("ranking", "cache_ttl_seconds", default=180))
+_ranking_cache: dict[tuple[str, str], tuple[float, RankingTable]] = {}
+_ranking_cache_lock = threading.Lock()
+
+
+def _ranking_cache_get(owner_ref: str, course_id: str) -> tuple[RankingTable, float] | None:
+    with _ranking_cache_lock:
+        entry = _ranking_cache.get((owner_ref, course_id))
+    if entry is None:
+        return None
+    created, table = entry
+    age = time.time() - created
+    if age > _RANKING_CACHE_TTL_SECONDS:
+        return None
+    return table, age
+
+
+def _ranking_cache_put(owner_ref: str, course_id: str, table: RankingTable) -> None:
+    with _ranking_cache_lock:
+        # 利用者ごとにコース1件だけ保持し、古い項目を貯めない。
+        for key in [k for k in _ranking_cache if k[0] == owner_ref]:
+            _ranking_cache.pop(key, None)
+        _ranking_cache[(owner_ref, course_id)] = (time.time(), table)
+
+
+def invalidate_ranking_cache(owner_ref: str) -> None:
+    """確定点を更新したときにキャッシュを破棄する。"""
+    with _ranking_cache_lock:
+        for key in [k for k in _ranking_cache if k[0] == owner_ref]:
+            _ranking_cache.pop(key, None)
+
+
 def _live_confirmed_grades(identity: SessionIdentity, course_id: str,
                            coursework_id: str) -> dict[str, float]:
     """Classroom上で確定済みのassignedGradeを取得する。
@@ -1068,6 +1104,8 @@ def _course_ranking_table(identity: SessionIdentity, course_id: str, *,
         sources.append({
             "coursework_id": cw,
             "title": str(item.get("title") or cw),
+            # 満点で正規化して平均点を出すため必須。無い課題は比率計算から除く。
+            "max_points": item.get("maxPoints"),
             "rows": rows,
             "reviews": _teacher_reviews.load_reference(
                 _identity_reference(identity), selected, cw),
@@ -1086,7 +1124,8 @@ def _ranking_response(course_id: str, table: RankingTable) -> dict[str, Any]:
         "course_id": course_id,
         "rank_style": table.rank_style,
         "courseworks": [
-            {"coursework_id": column.coursework_id, "title": column.title}
+            {"coursework_id": column.coursework_id, "title": column.title,
+             "max_points": column.max_points}
             for column in table.courseworks
         ],
         "rows": [{
@@ -1098,6 +1137,13 @@ def _ranking_response(course_id: str, table: RankingTable) -> dict[str, Any]:
             "submitted_count": row.submitted_count,
             "top_score_count": row.top_score_count,
             "not_submitted_count": row.not_submitted_count,
+            "average_rate": row.average_rate,
+            "evaluated_count": row.evaluated_count,
+            "unconfirmed_count": row.unconfirmed_count,
+            "not_submitted": {
+                column.coursework_id: flag
+                for column, flag in zip(table.courseworks, row.not_submitted_flags)
+            },
             "scores": {
                 column.coursework_id: score
                 for column, score in zip(table.courseworks, row.scores)
@@ -1108,10 +1154,25 @@ def _ranking_response(course_id: str, table: RankingTable) -> dict[str, Any]:
 
 @app.get("/api/v1/courses/{course_id}/ranking")
 def v1_course_ranking(
-    course_id: str, identity: SessionIdentity = Depends(require_session),
+    course_id: str, refresh: bool = False,
+    identity: SessionIdentity = Depends(require_session),
 ) -> dict[str, Any]:
     selected = _valid_course_id(course_id)
-    return _ranking_response(selected, _course_ranking_table(identity, selected))
+    owner_ref = _identity_reference(identity)
+    if not refresh:
+        cached = _ranking_cache_get(owner_ref, selected)
+        if cached is not None:
+            table, age = cached
+            response = _ranking_response(selected, table)
+            response["cached"] = True
+            response["cache_age_seconds"] = round(age, 1)
+            return response
+    table = _course_ranking_table(identity, selected)
+    _ranking_cache_put(owner_ref, selected, table)
+    response = _ranking_response(selected, table)
+    response["cached"] = False
+    response["cache_age_seconds"] = 0.0
+    return response
 
 
 def _spreadsheet_id(value: str) -> str:
@@ -1685,6 +1746,7 @@ def v1_put_teacher_review(
         proposal_score=proposal_score if isinstance(proposal_score, (int, float)) else None,
         signals=signals, review_started_at=request.review_started_at,
     )
+    invalidate_ranking_cache(_identity_reference(identity))
     _audit.append(actor=identity.sub, action="review.confirm", course=selected,
                   cw=cw, outcome=saved["status"])
     return {"student_id": sid, "teacher_status": saved["status"],
