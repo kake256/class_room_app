@@ -58,6 +58,10 @@ from .jobs import JobConflictError, JobOptions, JobService, JobStore
 from .google_auth import (
     GoogleOAuthManager, OAuthConfigurationError, OAuthStateError, token_reference,
 )
+from .settings_presets import (
+    build_settings as build_preset_settings, catalog as preset_catalog,
+    preset_for_assignment_key,
+)
 from .session_auth import (
     COOKIE_NAME, InvalidSession, SessionIdentity, SessionManager, UserNotAllowed,
 )
@@ -330,6 +334,17 @@ class CourseworkSettingsRequest(BaseModel):
     score_mapping: dict[str, float]
     late_penalty: float = 0
     confirmed: bool = False
+
+
+class PresetApplyRequest(BaseModel):
+    """課題ごとに一から書かずに既定の採点基準を適用する。
+
+    確認済みにはしない(教員がWeb UIで内容を確認して保存した時点で確認済み)。
+    overwrite=falseなら、既に確認済みの課題は変更しない。
+    """
+    preset_id: str = ""
+    coursework_ids: list[str] = []
+    overwrite_confirmed: bool = False
 
 
 class TeacherReviewRequest(BaseModel):
@@ -1269,6 +1284,61 @@ def v1_coursework_settings(
         "max_points": meta.get("maxPoints"), "legacy_assignment_key": assignments.get(cw),
         "can_edit": identity.role in {"admin", "grader"},
     }
+
+
+@app.get("/api/v1/settings-presets")
+def v1_settings_presets(_: SessionIdentity = Depends(require_session)) -> dict[str, Any]:
+    """実運用で確定した採点基準をもとにした既定プリセット一覧。"""
+    return {"presets": preset_catalog()}
+
+
+@app.post("/api/v1/courses/{course_id}/settings-presets/apply")
+def v1_apply_settings_preset(
+    course_id: str, request: PresetApplyRequest,
+    identity: SessionIdentity = Depends(require_grader),
+) -> dict[str, Any]:
+    """複数課題へ既定の採点基準をまとめて適用する。
+
+    各課題の満点へ比例換算して保存し、確認済みにはしない。適用後は課題ごとに
+    個別調整できる。既に確認済みの課題はoverwrite_confirmedがtrueの場合だけ上書きする。
+    """
+    selected = _valid_course_id(course_id)
+    _require_teacher_course(identity, selected)
+    if not request.coursework_ids:
+        raise HTTPException(status_code=400, detail="対象の課題を選択してください。")
+    if len(request.coursework_ids) > 100:
+        raise HTTPException(status_code=400, detail="一度に適用できるのは100件までです。")
+    applied, skipped = [], []
+    for raw in request.coursework_ids:
+        cw = _valid_coursework_id(raw)
+        meta = _require_coursework(identity, selected, cw)
+        max_points = meta.get("maxPoints")
+        if max_points is None:
+            skipped.append({"coursework_id": cw, "reason": "max_points_missing"})
+            continue
+        current = load_settings(_cfg, selected, cw) or {}
+        if current.get("confirmed") and not request.overwrite_confirmed:
+            skipped.append({"coursework_id": cw, "reason": "already_confirmed"})
+            continue
+        preset_id = request.preset_id or preset_for_assignment_key(
+            (_cfg.get("assignments", default={}) or {}).get(cw))
+        if not preset_id:
+            skipped.append({"coursework_id": cw, "reason": "preset_not_determined"})
+            continue
+        try:
+            value = build_preset_settings(preset_id, float(max_points))
+            saved = save_settings(_cfg, selected, cw, value, max_points=float(max_points),
+                                  actor_ref=token_reference(identity.sub))
+        except ValueError as exc:
+            skipped.append({"coursework_id": cw, "reason": str(exc)})
+            continue
+        applied.append({"coursework_id": cw, "preset_id": preset_id,
+                        "max_points": float(max_points),
+                        "score_mapping": saved.get("score_mapping")})
+    _audit.append(actor=identity.sub, action="settings.preset_apply", course=selected,
+                  cw=None, outcome=f"applied:{len(applied)} skipped:{len(skipped)}")
+    return {"applied": applied, "skipped": skipped,
+            "next_step": "適用した課題の内容を確認し、確認チェックを付けて保存すると採点を開始できます。"}
 
 
 @app.put("/api/v1/courses/{course_id}/courseworks/{coursework_id}/settings")

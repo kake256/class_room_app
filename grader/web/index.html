@@ -25,6 +25,7 @@
   <nav class="tabs" role="tablist" aria-label="機能の切り替え">
     <button id="tab-grading" class="tab" role="tab" aria-controls="panel-grading" aria-selected="true">採点</button>
     <button id="tab-mcp" class="tab" role="tab" aria-controls="panel-mcp" aria-selected="false">AI連携（MCP）</button>
+    <button id="tab-jobs" class="tab" role="tab" aria-controls="panel-jobs" aria-selected="false">ジョブ</button>
     <button id="tab-extension" class="tab" role="tab" aria-controls="panel-extension" aria-selected="false">Chrome拡張機能</button>
   </nav>
   <div id="panel-grading" role="tabpanel" aria-labelledby="tab-grading">
@@ -155,6 +156,17 @@
       <button id="quick-full" type="button">AI採点案を作成</button>
       <span id="quick-message" class="hint" role="status"></span>
     </div>
+    <div class="toolbar quick-actions">
+      <label>採点基準の既定
+        <select id="preset-select"><option value="">課題タイプを選択</option></select>
+      </label>
+      <label><input id="preset-all" type="checkbox" checked> 未設定の課題すべてに適用</label>
+      <button id="preset-apply" type="button">既定の採点基準を適用</button>
+      <span id="preset-message" class="hint" role="status"></span>
+    </div>
+    <p class="hint">既定は実運用で確定した基準（特別講義の感想文、MLPのまとめ、演習・調査課題）
+    をもとにしています。適用後は課題ごとに「採点基準を設定」から個別調整できます。
+    適用しただけでは確認済みにならないため、内容を確認して保存してください。</p>
     <div class="toolbar grading-options">
       <label>採点の厳しさ
         <select id="grading-mode">
@@ -169,7 +181,14 @@
     課題の採点基準は自動推定せず、管理者が登録したrubric mappingを使います。</p>
     <div id="course-error" class="error"></div><div id="courses"></div>
   </section>
-  <section><h2>ジョブ</h2><div id="jobs"></div></section>
+  </div>
+  <div id="panel-jobs" role="tabpanel" aria-labelledby="tab-jobs" hidden>
+    <section><h2>ジョブ</h2>
+      <p class="hint">採点ジョブの進行状況です。待機中のジョブは取り消せます。</p>
+      <div id="jobs"></div>
+    </section>
+  </div>
+  <div id="panel-grading-3" role="tabpanel" aria-labelledby="tab-grading">
   <section><h2>コースランキング</h2>
     <p class="hint">教員が確認済みにした点とClassroomの人間採点だけを集計します。
     未確認・未提出は順位へ含めません。同点は同順位です。</p>

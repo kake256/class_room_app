@@ -122,8 +122,8 @@ function riskScore(r){
 const RISK_THRESHOLD=12;
 
 // タブ切り替え。採点パネルは2ブロックに分かれているため両方を制御する。
-const TAB_PANELS={grading:["panel-grading","panel-grading-2"],mcp:["panel-mcp"],
-                  extension:["panel-extension"]};
+const TAB_PANELS={grading:["panel-grading","panel-grading-2","panel-grading-3"],
+                  mcp:["panel-mcp"],jobs:["panel-jobs"],extension:["panel-extension"]};
 function selectTab(name){
   for(const [key,ids] of Object.entries(TAB_PANELS)){
     const active=key===name;
@@ -179,6 +179,49 @@ async function runQuickJob(phase){
   message.textContent=`${PHASE_LABELS[phase]}を開始しています…`;
   try{await startJob(target,phase);message.textContent=`${PHASE_LABELS[phase]}を開始しました。進捗は「ジョブ」で確認できます。`}
   catch(e){message.textContent=e.message}
+}
+
+// 実運用で確定した基準をもとにした既定の採点基準プリセット
+async function loadPresets(){
+  const select=$("preset-select");
+  if(!select)return;
+  try{
+    const d=await api("/api/v1/settings-presets").then(r=>r.json());
+    select.replaceChildren();
+    const placeholder=node("option","課題タイプを選択");placeholder.value="";select.append(placeholder);
+    for(const preset of d.presets){
+      const option=node("option",preset.label);
+      option.value=preset.id;option.title=preset.description;
+      select.append(option);
+    }
+  }catch(e){$("preset-message").textContent=e.message}
+}
+
+async function applyPreset(){
+  const message=$("preset-message");
+  const presetId=$("preset-select").value;
+  if(!selectedCourseId){message.textContent="担当コースを選択してください。";return}
+  if(!presetId){message.textContent="課題タイプを選択してください。";return}
+  const applyAll=$("preset-all").checked;
+  const targets=applyAll
+    ? courseworkIndex.filter(c=>!c.configured).map(c=>c.id)
+    : ($("quick-coursework").value?[$("quick-coursework").value]:[]);
+  if(!targets.length){
+    message.textContent=applyAll?"未設定の課題がありません。":"課題を選択してください。";
+    return;
+  }
+  if(!confirm(`${targets.length}件の課題へ既定の採点基準を適用します。\n`
+      +"適用しただけでは確認済みになりません。内容を確認して保存してください。"))return;
+  message.textContent="適用しています…";
+  try{
+    const d=await api(`/api/v1/courses/${encodeURIComponent(selectedCourseId)}/settings-presets/apply`,
+      {method:"POST",headers:{"Content-Type":"application/json"},
+       body:JSON.stringify({preset_id:presetId,coursework_ids:targets,overwrite_confirmed:false})})
+      .then(r=>r.json());
+    const skippedNote=d.skipped.length?` / 対象外 ${d.skipped.length}件（確認済みなど）`:"";
+    message.textContent=`適用 ${d.applied.length}件${skippedNote}。内容を確認し、確認チェックを付けて保存してください。`;
+    await loadCourseworks();
+  }catch(e){message.textContent=e.message}
 }
 
 async function loadCourseworks(){selectedCourseId=$("course-select").value;$("courses").replaceChildren();if(!selectedCourseId){courseworkIndex=[];renderQuickCourseworkOptions();return}localStorage.setItem("cga-selected-course",selectedCourseId);const current=courses.find(c=>c.id===selectedCourseId);$("selected-course").textContent=`選択中: ${current?.name||selectedCourseId}`;try{const courseId=selectedCourseId;const d=await api(`/api/v1/courses/${encodeURIComponent(courseId)}/overview`).then(r=>r.json());$("course-error").textContent="";const root=$("courses");courseworkIndex=d.courseworks.map(c=>({id:c.id,title:c.title,configured:Boolean(c.configured)&&!c.overview_errors?.some(e=>e.code==="settings_unavailable")}));renderQuickCourseworkOptions();for(const c of d.courseworks){const ready=c.readiness;const settingsError=c.overview_errors?.some(e=>e.code==="settings_unavailable");const readinessError=c.overview_errors?.some(e=>e.code==="readiness_unavailable");const configured=Boolean(c.configured)&&!settingsError;const box=node("article",undefined,"course");box.append(node("strong",c.title||c.id),node("div",`ID: ${c.id} / 配点: ${c.max_points??"-"} / 採点基準: ${c.settings?.confirmed?"教師設定済み":(c.settings?"未確認":(c.assignment_key||"未登録"))}`),node("div",readinessError||!ready?"準備状況を取得できません。":`対象 ${ready.total} / 人間採点 ${ready.human_graded} / AI処理済み ${ready.system_graded}`));if(settingsError)box.append(node("div","採点基準を読み取れません。管理者へ確認してください。","error"));else if(!configured)box.append(node("div","採点基準を設定し、確認チェックを付けて保存するまで採点は開始できません。","error"));const acts=node("div",undefined,"course-actions");const settingsButton=node("button","採点基準を設定");settingsButton.disabled=session.role==="viewer";settingsButton.addEventListener("click",()=>openSettings(c,c.max_points));acts.append(settingsButton);const full=node("button",PHASE_LABELS.full);full.disabled=session.role==="viewer"||!configured;full.addEventListener("click",()=>startJob(c,"full"));acts.append(full);const transfer=node("button","Classroomへ下書き入力");transfer.disabled=session.role==="viewer";const transferMessage=node("p","","hint coursework-transfer-message");transferMessage.setAttribute("role","status");transfer.addEventListener("click",()=>transferDraftFor(courseId,c.id,transfer,transferMessage));acts.append(transfer);const view=node("button","結果を確認");view.addEventListener("click",()=>loadResults(c.id,c.title));acts.append(view);box.append(acts,transferMessage);root.append(box)}}catch(e){$("course-error").textContent=e.message}}
@@ -281,4 +324,4 @@ $("mcp-create").addEventListener("click",createMcpToken);$("mcp-copy").addEventL
 $("settings-form").addEventListener("submit",saveSettings);
 $("template-select").addEventListener("change",updateTemplateButtons);$("template-create").addEventListener("click",createTemplate);$("template-apply").addEventListener("click",applyTemplate);$("template-rename").addEventListener("click",renameTemplate);$("template-delete").addEventListener("click",deleteTemplate);
 $("ranking-spreadsheet").value=localStorage.getItem("cga-ranking-spreadsheet")||"";$("ranking-sheet").value=localStorage.getItem("cga-ranking-sheet")||"ランキング";$("ranking-range").value=localStorage.getItem("cga-ranking-range")||"A1:Z1000";
-$("google-login").addEventListener("click",connectGoogle);$("google-reconnect").addEventListener("click",connectGoogle);$("logout").addEventListener("click",logout);$("course-select").addEventListener("change",async()=>{await loadCourseworks();await loadRanking()});$("ranking-refresh").addEventListener("click",loadRanking);$("ranking-export").addEventListener("click",exportRanking);$("tab-grading").addEventListener("click",()=>selectTab("grading"));$("tab-mcp").addEventListener("click",()=>selectTab("mcp"));$("tab-extension").addEventListener("click",()=>selectTab("extension"));$("courses-refresh").addEventListener("click",loadCourseworks);$("quick-prepare").addEventListener("click",()=>runQuickJob("prepare"));$("quick-full").addEventListener("click",()=>runQuickJob("full"));$("search").addEventListener("input",renderRows);$("risk-only").addEventListener("change",renderRows);$("draft-preview").addEventListener("click",previewDraft);$("draft-transfer").addEventListener("click",transferDraft);$("draft-create").addEventListener("click",createDraft);$("csv").addEventListener("click",downloadCsv);window.addEventListener("message",e=>{if(e.origin!==location.origin||e.data?.type!=="classroom-oauth")return;notice=e.data.result==="success"?"Google Classroomに接続しました。":(e.data.message||"Google認証に失敗しました。");refresh()});selectTab(localStorage.getItem("cga-active-tab")||"grading");handleOAuthReturn();refresh();
+$("google-login").addEventListener("click",connectGoogle);$("google-reconnect").addEventListener("click",connectGoogle);$("logout").addEventListener("click",logout);$("course-select").addEventListener("change",async()=>{await loadCourseworks();await loadRanking()});$("ranking-refresh").addEventListener("click",loadRanking);$("ranking-export").addEventListener("click",exportRanking);$("tab-grading").addEventListener("click",()=>selectTab("grading"));$("tab-mcp").addEventListener("click",()=>selectTab("mcp"));$("tab-extension").addEventListener("click",()=>selectTab("extension"));$("tab-jobs").addEventListener("click",()=>selectTab("jobs"));$("preset-apply").addEventListener("click",applyPreset);$("courses-refresh").addEventListener("click",loadCourseworks);$("quick-prepare").addEventListener("click",()=>runQuickJob("prepare"));$("quick-full").addEventListener("click",()=>runQuickJob("full"));$("search").addEventListener("input",renderRows);$("risk-only").addEventListener("change",renderRows);$("draft-preview").addEventListener("click",previewDraft);$("draft-transfer").addEventListener("click",transferDraft);$("draft-create").addEventListener("click",createDraft);$("csv").addEventListener("click",downloadCsv);window.addEventListener("message",e=>{if(e.origin!==location.origin||e.data?.type!=="classroom-oauth")return;notice=e.data.result==="success"?"Google Classroomに接続しました。":(e.data.message||"Google認証に失敗しました。");refresh()});selectTab(localStorage.getItem("cga-active-tab")||"grading");handleOAuthReturn();refresh();loadPresets();

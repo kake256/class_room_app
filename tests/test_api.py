@@ -1635,7 +1635,7 @@ def test_web_ui_separates_mcp_and_extension_into_tabs():
     assert 'id="panel-mcp" role="tabpanel" aria-labelledby="tab-mcp" hidden' in html
     assert 'id="panel-extension" role="tabpanel" aria-labelledby="tab-extension" hidden' in html
     # 採点パネルは2ブロックに分かれるため両方を切り替える
-    assert 'grading:["panel-grading","panel-grading-2"]' in js
+    assert 'grading:["panel-grading","panel-grading-2","panel-grading-3"]' in js
 
 
 def test_web_ui_offers_top_level_coursework_fetch():
@@ -1651,3 +1651,48 @@ def test_web_ui_offers_top_level_coursework_fetch():
     # 課題カードからは答案準備ボタンを外している(上部へ集約)
     cards = js[js.index("const acts=node(\"div\",undefined,\"course-actions\")"):]
     assert 'startJob(c,"prepare")' not in cards
+
+
+def test_web_ui_has_jobs_tab_and_bulk_preset_apply():
+    """ジョブは別タブ。採点基準は最上部でまとめて適用できる。"""
+    import pathlib
+
+    html = pathlib.Path("grader/web/index.html").read_text(encoding="utf-8")
+    js = pathlib.Path("grader/web/app.js").read_text(encoding="utf-8")
+    assert 'id="tab-jobs"' in html and 'id="panel-jobs"' in html
+    assert 'id="preset-select"' in html and 'id="preset-apply"' in html
+    assert "async function applyPreset()" in js
+    assert 'jobs:["panel-jobs"]' in js
+    # 採点パネルは3ブロックに分かれる
+    assert 'grading:["panel-grading","panel-grading-2","panel-grading-3"]' in js
+
+
+def test_preset_apply_endpoint_does_not_auto_confirm(client, monkeypatch):
+    """一括適用しただけでは確認済みにせず、確認済み課題は上書きしない。"""
+    from grader.course_settings import load_settings, save_settings
+
+    csrf = login(client)
+    url = "/api/v1/courses/200000000001/settings-presets/apply"
+    headers = {"X-CSRF-Token": csrf}
+    response = client.post(url, headers=headers, json={
+        "preset_id": "kansou_lecture", "coursework_ids": ["100000000001"]})
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["applied"]) == 1 and body["applied"][0]["preset_id"] == "kansou_lecture"
+    saved = load_settings(api._cfg, "200000000001", "100000000001")
+    assert saved["confirmed"] is False
+    # maxPoints=10 なので確認済み基準と同じ配分になる
+    assert saved["score_mapping"] == {"0": 0.0, "1": 8.0, "2": 9.0, "3": 10.0}
+
+    # 確認済みの課題は上書きしない
+    save_settings(api._cfg, "200000000001", "100000000001",
+                  {**saved, "confirmed": True}, max_points=10.0, actor_ref="a" * 64)
+    again = client.post(url, headers=headers, json={
+        "preset_id": "experiment", "coursework_ids": ["100000000001"]}).json()
+    assert again["applied"] == []
+    assert again["skipped"][0]["reason"] == "already_confirmed"
+    assert load_settings(api._cfg, "200000000001", "100000000001")["score_mapping"] == {
+        "0": 0.0, "1": 8.0, "2": 9.0, "3": 10.0}
+
+    # 対象未指定は400
+    assert client.post(url, headers=headers, json={"preset_id": "experiment"}).status_code == 400

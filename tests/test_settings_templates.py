@@ -110,3 +110,54 @@ def test_corrupt_store_is_not_silently_overwritten(tmp_path):
     service.path.write_text("not json")
     with pytest.raises(TemplateStoreError):
         service.create(name="safe", settings=settings(), source_max_points=100)
+
+
+def test_presets_derive_from_confirmed_rubrics_and_scale_to_max_points():
+    """既定プリセットは実運用の基準に基づき、課題の満点へ比例換算される。"""
+    from grader.settings_presets import (
+        build_settings, catalog, preset_for_assignment_key, preset_ids)
+
+    ids = preset_ids()
+    assert {"kansou_lecture", "kansou_summary", "research", "experiment",
+            "distance", "knn"} <= set(ids)
+    # 一覧には採点基準本文を含めない(UI表示用)
+    for entry in catalog():
+        assert set(entry) == {"id", "label", "description", "rubric_key"}
+
+    # ソニー課題で確認済みの配分(0/8/9/10)を10点満点で再現する
+    lecture = build_settings("kansou_lecture", 10.0)
+    assert lecture["score_mapping"] == {"0": 0.0, "1": 8.0, "2": 9.0, "3": 10.0}
+    # 満点が変わっても比率を保つ(単純な線形にはしない)
+    scaled = build_settings("kansou_lecture", 5.0)
+    assert scaled["score_mapping"] == {"0": 0.0, "1": 4.0, "2": 4.5, "3": 5.0}
+    # 適用しただけでは確認済みにしない
+    assert lecture["confirmed"] is False
+    assert set(lecture["levels"]) == {"0", "1", "2", "3"}
+
+    # 演習系は達成段階を反映する別配分
+    experiment = build_settings("experiment", 10.0)
+    assert experiment["score_mapping"] == {"0": 0.0, "1": 6.0, "2": 8.0, "3": 10.0}
+
+    # 課題キーからの推定(config.yamlのassignmentsに対応)
+    assert preset_for_assignment_key("mlp_kansou") == "kansou_summary"
+    assert preset_for_assignment_key("tokubetsu0511") == "kansou_lecture"
+    assert preset_for_assignment_key("knn") == "knn"
+    assert preset_for_assignment_key("unknown-key") is None
+    assert preset_for_assignment_key(None) is None
+
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        build_settings("bogus", 10.0)
+    with _pytest.raises(ValueError):
+        build_settings("experiment", 0)
+
+
+def test_preset_settings_pass_existing_validation():
+    """プリセットは既存のvalidate_settingsを通る形になっている。"""
+    from grader.course_settings import validate_settings
+    from grader.settings_presets import build_settings, preset_ids
+
+    for preset_id in preset_ids():
+        value = validate_settings(build_settings(preset_id, 10.0), 10.0)
+        assert value["confirmed"] is False
+        assert sorted(value["score_mapping"]) == ["0", "1", "2", "3"]
