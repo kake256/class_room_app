@@ -199,6 +199,12 @@
       <button id="ranking-export" type="button">Google Sheetsへ出力</button></div>
     <p id="ranking-message" class="hint" role="status"></p>
     <div id="ranking-wrap" class="table-wrap" hidden><table class="ranking-table"><thead id="ranking-head"></thead><tbody id="ranking-rows"></tbody></table></div>
+    <details id="ranking-detail" hidden>
+      <summary>課題ごとの点数内訳を表示</summary>
+      <p class="hint">「—」は確定点がまだない課題です。課題名は省略表示されます（カーソルを合わせると全文が出ます）。</p>
+      <div class="table-wrap"><table class="ranking-table"><thead id="ranking-detail-head"></thead>
+        <tbody id="ranking-detail-rows"></tbody></table></div>
+    </details>
   </section>
   <section><h2>Classroom下書き入力</h2>
     <p class="hint">現在の採点基準で正常に作成されたAI採点案は、答案ごとの確認操作なしで下書き対象になります。

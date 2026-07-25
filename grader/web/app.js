@@ -313,24 +313,72 @@ async function loadResults(id,title=""){try{const d=await api(`/api/v1/courses/$
 
 async function downloadCsv(e){e.preventDefault();if(!selectedCourse||!selectedCourseId)return;try{const r=await api(`/api/v1/courses/${encodeURIComponent(selectedCourseId)}/courseworks/${selectedCourse}/report.csv`);const blob=await r.blob(),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=`${selectedCourse}.csv`;a.click();URL.revokeObjectURL(url)}catch(err){alert(err.message)}}
 
-async function loadRanking(){const message=$("ranking-message"),head=$("ranking-head"),body=$("ranking-rows");head.replaceChildren();body.replaceChildren();$("ranking-wrap").hidden=true;if(!selectedCourseId){message.textContent="担当コースを選択してください。";return}message.textContent="ランキングを集計しています…";try{const d=await api(`/api/v1/courses/${encodeURIComponent(selectedCourseId)}/ranking`).then(r=>r.json());if(!d.rows.length){
-      // 確定済みが無いときは列見出しだけの空表を出さない(壊れて見えるため)
-      $("ranking-wrap").hidden=true;
+// 連続実行で見出しが二重に描画されるのを防ぐ。DOMの書き換えはawaitの後に
+// まとめて行い、最新のリクエストの結果だけを反映する。
+let rankingRequestId=0;
+async function loadRanking(){
+  const message=$("ranking-message");
+  const requestId=++rankingRequestId;
+  if(!selectedCourseId){
+    $("ranking-wrap").hidden=true;$("ranking-detail").hidden=true;
+    $("ranking-head").replaceChildren();$("ranking-rows").replaceChildren();
+    message.textContent="担当コースを選択してください。";return;
+  }
+  message.textContent="確定済みの点数を取得して集計しています…";
+  try{
+    const d=await api(`/api/v1/courses/${encodeURIComponent(selectedCourseId)}/ranking`)
+      .then(r=>r.json());
+    if(requestId!==rankingRequestId)return;  // 新しい要求が来ていれば破棄する
+    const head=$("ranking-head"),body=$("ranking-rows");
+    const detailHead=$("ranking-detail-head"),detailBody=$("ranking-detail-rows");
+    head.replaceChildren();body.replaceChildren();
+    detailHead.replaceChildren();detailBody.replaceChildren();
+    if(!d.rows.length){
+      $("ranking-wrap").hidden=true;$("ranking-detail").hidden=true;
       message.textContent="確定済み成績はまだありません。Classroomで点数を確定するか、"
         +"採点結果画面で「点数を修正」して確認済みにすると集計されます。";
       return;
     }
+    // 1) 集計表: 順位と提出状況だけを見せる
+    const summaryHead=node("tr");
+    for(const [label,hint] of [["順位",""],["氏名",""],["確定点合計",""],
+        ["提出回数","未提出と分かっている課題を除いた数"],
+        ["最高点回数","各課題で受講者中の最高点だった回数"],
+        ["未提出回数","未提出と分かっている課題数"],
+        ["確定課題数","点数が確定している課題数"]]){
+      const th=node("th",label);if(hint)th.title=hint;summaryHead.append(th);
+    }
+    head.append(summaryHead);
+    for(const row of d.rows){
+      const line=node("tr");
+      for(const value of [row.rank,row.name,row.total,row.submitted_count,
+          row.top_score_count,row.not_submitted_count,row.confirmed_count]){
+        line.append(node("td",value));
+      }
+      body.append(line);
+    }
     $("ranking-wrap").hidden=false;
-    const tr=node("tr");
-    for(const label of ["順位","氏名","確定点合計","確定課題数"])tr.append(node("th",label));
+    // 2) 内訳表: 課題ごとの点数は折りたたみへ分離する
+    const detailRow=node("tr");
+    for(const label of ["順位","氏名"])detailRow.append(node("th",label));
     for(const c of d.courseworks){
       const th=node("th",c.title||c.coursework_id,"coursework-col");
-      th.title=c.title||c.coursework_id;  // 省略時に全文を確認できる
-      tr.append(th);
+      th.title=c.title||c.coursework_id;
+      detailRow.append(th);
     }
-    head.append(tr);
-    for(const row of d.rows){const line=node("tr");for(const value of [row.rank,row.name,row.total,row.confirmed_count,...d.courseworks.map(c=>row.scores[c.coursework_id]??"—")])line.append(node("td",value));body.append(line)}
-    message.textContent=`${d.rows.length}名 / ${d.courseworks.length}課題（同点は同順位）`}catch(e){message.textContent=e.message}}
+    detailHead.append(detailRow);
+    for(const row of d.rows){
+      const line=node("tr");
+      line.append(node("td",row.rank),node("td",row.name));
+      for(const c of d.courseworks)line.append(node("td",row.scores[c.coursework_id]??"—"));
+      detailBody.append(line);
+    }
+    $("ranking-detail").hidden=false;
+    message.textContent=`${d.rows.length}名 / ${d.courseworks.length}課題（同点は同順位）`;
+  }catch(e){
+    if(requestId===rankingRequestId)message.textContent=e.message;
+  }
+}
 
 async function exportRanking(){if(!selectedCourseId)return;const spreadsheet=$("ranking-spreadsheet").value.trim(),sheet=$("ranking-sheet").value.trim(),range=$("ranking-range").value.trim();if(!spreadsheet){$("ranking-message").textContent="スプレッドシートURLまたはIDを入力してください。";return}if(!confirm(`選択コースの確定済みランキングをGoogle Sheetsへ出力しますか?\nシート: ${sheet}\n範囲: ${range}`))return;localStorage.setItem("cga-ranking-spreadsheet",spreadsheet);localStorage.setItem("cga-ranking-sheet",sheet);localStorage.setItem("cga-ranking-range",range);$("ranking-message").textContent="Google Sheetsへ出力しています…";try{const d=await api(`/api/v1/courses/${encodeURIComponent(selectedCourseId)}/ranking/sheets`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({spreadsheet,sheet_name:sheet,range})}).then(r=>r.json());$("ranking-message").textContent=`Google Sheetsへ${d.updated_cells}セルを出力しました。`}catch(e){$("ranking-message").textContent=e.message}}
 

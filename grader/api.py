@@ -1095,6 +1095,9 @@ def _ranking_response(course_id: str, table: RankingTable) -> dict[str, Any]:
             "name": row.name,
             "total": row.total,
             "confirmed_count": row.confirmed_count,
+            "submitted_count": row.submitted_count,
+            "top_score_count": row.top_score_count,
+            "not_submitted_count": row.not_submitted_count,
             "scores": {
                 column.coursework_id: score
                 for column, score in zip(table.courseworks, row.scores)

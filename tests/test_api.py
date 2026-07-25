@@ -1350,7 +1350,7 @@ def test_ranking_sheets_uses_current_user_credentials_and_explicit_confirmation_
         "/api/v1/courses/200000000001/ranking/sheets",
         headers={"X-CSRF-Token": csrf},
         json={"spreadsheet": "a_valid_spreadsheet_id_12345",
-              "sheet_name": "ランキング", "range": "A1:F20"},
+              "sheet_name": "ランキング", "range": "A1:J20"},
     )
     assert response.status_code == 200
     assert response.json()["updated_cells"] == 10
@@ -1777,3 +1777,22 @@ def test_ranking_reads_confirmed_grades_from_classroom(client, monkeypatch, tmp_
     # Classroomのassigned_gradeが正本として反映される
     assert scores["111"] == 9.0 and scores["999"] == 7.0
     assert csrf
+
+
+def test_ranking_ui_separates_summary_from_per_coursework_scores():
+    """集計表と課題ごとの内訳を分け、見出しの二重描画を防ぐ。"""
+    import pathlib
+
+    html = pathlib.Path("grader/web/index.html").read_text(encoding="utf-8")
+    js = pathlib.Path("grader/web/app.js").read_text(encoding="utf-8")
+    # 内訳は折りたたみの別表へ分離する
+    assert 'id="ranking-detail"' in html and 'id="ranking-detail-head"' in html
+    # 集計表の列
+    for label in ("提出回数", "最高点回数", "未提出回数"):
+        assert label in js
+    # 連続実行で見出しが重複しないよう、最新要求だけを描画する
+    assert "let rankingRequestId=0;" in js
+    assert "if(requestId!==rankingRequestId)return;" in js
+    # DOM書き換えはawaitの後にまとめて行う
+    ranking = js[js.index("async function loadRanking(){"):js.index("async function exportRanking(){")]
+    assert ranking.index("await api(") < ranking.index("head.replaceChildren()")

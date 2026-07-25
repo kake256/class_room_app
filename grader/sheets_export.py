@@ -25,11 +25,14 @@ def sanitize_cell(value: Any) -> Any:
 
 def ranking_to_sheet_values(table: RankingTable) -> list[list[Any]]:
     """Build sanitized two-dimensional Sheets values from a ranking table."""
-    header: list[Any] = ["順位", "氏名", "確定点合計", "確定課題数"]
+    header: list[Any] = ["順位", "氏名", "確定点合計", "提出回数", "最高点回数",
+                         "未提出回数", "確定課題数"]
     header.extend(column.title for column in table.courseworks)
     values: list[list[Any]] = [header]
     for row in table.rows:
-        values.append([row.rank, row.name, row.total, row.confirmed_count, *row.scores])
+        values.append([row.rank, row.name, row.total, row.submitted_count,
+                       row.top_score_count, row.not_submitted_count,
+                       row.confirmed_count, *row.scores])
     return [[sanitize_cell(cell) for cell in row] for row in values]
 
 

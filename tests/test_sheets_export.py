@@ -41,8 +41,9 @@ def test_values_have_required_columns_and_formula_strings_are_escaped():
         {"student_id": "1", "name": "+SUM(A1:A2)", "source": "human", "mapped_score": 4},
     ]}])
     assert ranking_to_sheet_values(table) == [
-        ["順位", "氏名", "確定点合計", "確定課題数", "'=課題"],
-        [1, "'+SUM(A1:A2)", 4.0, 1, 4.0],
+        ["順位", "氏名", "確定点合計", "提出回数", "最高点回数", "未提出回数",
+         "確定課題数", "'=課題"],
+        [1, "'+SUM(A1:A2)", 4.0, 1, 1, 0, 1, 4.0],
     ]
     assert sanitize_cell("@cmd") == "'@cmd"
     assert sanitize_cell("-1+2") == "'-1+2"
@@ -78,3 +79,20 @@ def test_values_must_fit_explicit_range_and_credentials_are_not_implicit():
         write_values("a_valid_spreadsheet_id_12345", "Sheet1!A1:B1", [[1, 2], [3, 4]], service=SheetsService())
     with pytest.raises(ValueError):
         write_values("a_valid_spreadsheet_id_12345", "Sheet1!A1:B2", [[1]])
+
+
+def test_sheet_values_include_submission_summary_columns():
+    """Sheets出力にも提出回数・最高点回数・未提出回数を含める。"""
+    from grader.ranking import build_ranking
+
+    table = build_ranking([
+        {"coursework_id": "1", "title": "課題1", "rows": [
+            {"student_id": "a", "name": "A", "source": "human", "mapped_score": 10},
+            {"student_id": "b", "name": "B", "category": "not_submitted"},
+        ]},
+    ])
+    values = ranking_to_sheet_values(table)
+    assert values[0] == ["順位", "氏名", "確定点合計", "提出回数", "最高点回数",
+                         "未提出回数", "確定課題数", "課題1"]
+    assert values[1][:7] == [1, "A", 10, 1, 1, 0, 1]
+    assert values[2][:7] == [2, "B", 0, 0, 0, 1, 0]

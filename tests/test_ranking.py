@@ -62,3 +62,39 @@ def test_invalid_scores_and_duplicate_coursework_are_rejected_or_excluded():
     assert all(row.confirmed_count == 0 for row in table.rows)
     with pytest.raises(ValueError):
         build_ranking([{"coursework_id": "x", "rows": []}, {"coursework_id": "x", "rows": []}])
+
+
+def test_ranking_counts_submissions_top_scores_and_missing():
+    """提出回数・最高点回数・未提出回数を集計する。"""
+    table = build_ranking([
+        {"coursework_id": "1", "title": "課題1", "rows": [
+            {"student_id": "a", "name": "A", "source": "human", "mapped_score": 10},
+            {"student_id": "b", "name": "B", "source": "human", "mapped_score": 8},
+            {"student_id": "c", "name": "C", "category": "not_submitted"},
+        ]},
+        {"coursework_id": "2", "title": "課題2", "rows": [
+            {"student_id": "a", "name": "A", "source": "human", "mapped_score": 5},
+            {"student_id": "b", "name": "B", "source": "human", "mapped_score": 9},
+            {"student_id": "c", "name": "C", "state": "NOT_SUBMITTED"},
+        ]},
+    ])
+    by_id = {row.student_id: row for row in table.rows}
+    # Aは課題1で最高点、Bは課題2で最高点
+    assert by_id["a"].top_score_count == 1 and by_id["b"].top_score_count == 1
+    assert by_id["a"].submitted_count == 2 and by_id["a"].not_submitted_count == 0
+    # Cは両方とも未提出。提出回数0・確定0で最下位
+    assert by_id["c"].submitted_count == 0 and by_id["c"].not_submitted_count == 2
+    assert by_id["c"].confirmed_count == 0 and by_id["c"].total == 0
+    # 合計は変わらない(A=15, B=17)
+    assert by_id["a"].total == 15 and by_id["b"].total == 17
+
+
+def test_ranking_top_score_counts_ties_for_every_holder():
+    """同点で最高点なら双方を最高点回数に数える。"""
+    table = build_ranking([
+        {"coursework_id": "1", "title": "課題1", "rows": [
+            {"student_id": "a", "name": "A", "source": "human", "mapped_score": 7},
+            {"student_id": "b", "name": "B", "source": "human", "mapped_score": 7},
+        ]},
+    ])
+    assert all(row.top_score_count == 1 for row in table.rows)
