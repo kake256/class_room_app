@@ -1895,7 +1895,8 @@ def test_web_ui_collapses_coursework_list_and_shows_top_scorers():
 
     html = pathlib.Path("grader/web/index.html").read_text(encoding="utf-8")
     js = pathlib.Path("grader/web/app.js").read_text(encoding="utf-8")
-    assert '<details id="courses-details" open>' in html
+    # 課題一覧は既定で閉じる(openを付けない)
+    assert '<details id="courses-details">' in html
     assert 'id="courses-summary"' in html
     assert 'id="top-scorers"' in html and 'id="answer-dialog"' in html
     # 点数内訳と最高点者はタブで切り替える(既定は内訳)
@@ -1903,6 +1904,7 @@ def test_web_ui_collapses_coursework_list_and_shows_top_scorers():
     assert 'ranking:"subpanel-ranking"' in js and 'zero:"subpanel-zero"' in js
     # 既定はランキング
     assert 'id="subtab-ranking" class="subtab active"' in html
+    assert 'localStorage.getItem("cga-ranking-subtab-v2")||"ranking"' in js
     # 0点・未提出はランキング取得結果から組み立てる(追加のAPI呼び出しをしない)
     assert "function renderZeroAndMissing()" in js
     assert 'row.not_submitted?.[c.coursework_id]' in js
