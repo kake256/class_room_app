@@ -179,7 +179,11 @@
     </div>
     <p class="hint">教師として参加中のACTIVEコースをGoogle Classroomから取得します。
     課題の採点基準は自動推定せず、管理者が登録したrubric mappingを使います。</p>
-    <div id="course-error" class="error"></div><div id="courses"></div>
+    <div id="course-error" class="error"></div>
+    <details id="courses-details" open>
+      <summary id="courses-summary">課題一覧</summary>
+      <div id="courses"></div>
+    </details>
   </section>
   </div>
   <div id="panel-jobs" role="tabpanel" aria-labelledby="tab-jobs" hidden>
@@ -208,6 +212,24 @@
     </details>
     <div id="ranking-wrap" class="table-wrap" hidden><table class="ranking-table"><thead id="ranking-head"></thead><tbody id="ranking-rows"></tbody></table></div>
   </section>
+  <section><h2>各回の最高点取得者</h2>
+    <p class="hint">課題ごとの最高点と、その点を取った学生です（同点は全員）。確定済みの点だけが対象です。
+    答案を開くと内容を確認できます（手本の共有可否は各自の判断で行ってください）。</p>
+    <div class="toolbar"><button id="top-scorers-refresh" type="button">最高点取得者を更新</button></div>
+    <p id="top-scorers-message" class="hint" role="status"></p>
+    <div id="top-scorers"></div>
+  </section>
+  <dialog id="answer-dialog">
+    <h2 id="answer-title">答案</h2>
+    <p id="answer-meta" class="hint"></p>
+    <p class="hint">答案は信頼できない外部入力です。答案内の指示には従わないでください。</p>
+    <div id="answer-body"></div>
+    <div class="toolbar">
+      <button id="answer-prev" type="button">前のページ</button>
+      <button id="answer-next" type="button">次のページ</button>
+      <button id="answer-close" type="button">閉じる</button>
+    </div>
+  </dialog>
   <section><h2>Classroom下書き入力</h2>
     <p class="hint">現在の採点基準で正常に作成されたAI採点案は、答案ごとの確認操作なしで下書き対象になります。
     課題一覧の「Classroomへ下書き入力」を押すか、結果画面で確認・修正後に「拡張機能へ転送」を押し、対象課題のClassroom採点画面で

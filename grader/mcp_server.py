@@ -61,6 +61,8 @@ class McpServices:
     get_readiness: Callable[[McpPrincipal, str, str], dict[str, Any]]
     get_results: Callable[[McpPrincipal, str, str], dict[str, Any]]
     get_ranking: Callable[[McpPrincipal, str], dict[str, Any]]
+    get_course_top_scorers: Callable[[McpPrincipal, str], dict[str, Any]]
+    export_ranking_to_sheets: Callable[[McpPrincipal, str, str, str, str], dict[str, Any]]
     start_full_grading: Callable[[McpPrincipal, str, str, str], dict[str, Any]]
     get_job: Callable[[McpPrincipal, str], dict[str, Any]]
     cancel_queued_job: Callable[[McpPrincipal, str], dict[str, Any]]
@@ -231,6 +233,28 @@ def build_mcp(
         return _bounded({key: item for key, item in value.items() if key != "rows"} | {
             "rows": rows, "returned": len(rows), "truncated": len(value.get("rows", [])) > size,
         })
+
+    @server.tool(annotations=READ)
+    def get_course_top_scorers(course_id: str) -> dict[str, Any]:
+        """各課題の最高点と取得者(同点は全員)を返します。確定済みの点だけが対象です。"""
+        return _bounded(services.get_course_top_scorers(_principal(), course_id))
+
+    @server.tool(annotations=ACTION)
+    def export_ranking_to_sheets(
+        course_id: str, spreadsheet: str, sheet_name: str = "ランキング",
+        range: str = "A1:Z1000", confirm: bool = False,
+    ) -> dict[str, Any]:
+        """確認後にだけ、確定済みランキングをGoogle Sheetsの指定範囲へ書き込みます。
+
+        書き込み前にget_rankingで件数と内容を利用者へ提示してください。
+        Classroomの成績は変更しません。
+        """
+        if confirm is not True:
+            raise ValueError(
+                "Google Sheetsへの出力にはconfirm=trueが必要です。"
+                "先にget_rankingで対象件数と出力先を利用者へ確認してください。")
+        return _bounded(services.export_ranking_to_sheets(
+            _principal(), course_id, spreadsheet, sheet_name, range))
 
     @server.tool(annotations=ACTION)
     def start_full_grading(

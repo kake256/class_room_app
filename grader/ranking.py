@@ -45,6 +45,24 @@ class RankedStudent:
 
 
 @dataclass(frozen=True)
+class TopScorer:
+    """ある課題で最高点だった学生。"""
+    student_id: str
+    name: str
+    score: float
+
+
+@dataclass(frozen=True)
+class CourseworkTopScore:
+    """課題ごとの最高点と、その取得者(同点は全員)。"""
+    coursework_id: str
+    title: str
+    max_points: float | None
+    top_score: float | None
+    scorers: tuple[TopScorer, ...]
+
+
+@dataclass(frozen=True)
 class RankingTable:
     """Competition-ranked rows and their coursework-column order."""
 
@@ -216,7 +234,32 @@ def build_ranking(
     return RankingTable(tuple(columns), tuple(ranked), rank_style)
 
 
+def top_scorers(table: RankingTable) -> tuple[CourseworkTopScore, ...]:
+    """課題ごとの最高点と取得者を、ランキング表から導出する。
+
+    確定点が1件も無い課題はtop_score=None・取得者なしで返す(欠番にしない)。
+    """
+    results: list[CourseworkTopScore] = []
+    for index, column in enumerate(table.courseworks):
+        best: float | None = None
+        for row in table.rows:
+            value = row.scores[index]
+            if value is None:
+                continue
+            if best is None or value > best:
+                best = value
+        scorers = tuple(
+            TopScorer(row.student_id, row.name, row.scores[index])
+            for row in table.rows
+            if best is not None and row.scores[index] is not None
+            and row.scores[index] >= best
+        )
+        results.append(CourseworkTopScore(
+            column.coursework_id, column.title, column.max_points, best, scorers))
+    return tuple(results)
+
+
 __all__ = [
-    "MISSING_PENALTY_RATE", "CourseworkColumn", "RankedStudent",
-    "RankingTable", "build_ranking",
+    "MISSING_PENALTY_RATE", "CourseworkColumn", "CourseworkTopScore",
+    "RankedStudent", "RankingTable", "TopScorer", "build_ranking", "top_scorers",
 ]

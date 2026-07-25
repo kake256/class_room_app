@@ -49,3 +49,9 @@ button:disabled, .button.disabled {
   border-color: #cbd5e1;
 }
 .ranking-table td.missing-cell { color: #b91c1c; }
+
+/* 答案表示 */
+#answer-dialog { max-width: min(94vw, 60rem); max-height: 90vh; }
+#answer-body { max-height: 60vh; overflow: auto; }
+.answer-image { max-width: 100%; height: auto; border: 1px solid #cbd5e1; }
+#courses-summary { cursor: pointer; font-weight: 600; padding: .3rem 0; }

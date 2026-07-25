@@ -68,7 +68,7 @@ from .session_auth import (
     COOKIE_NAME, InvalidSession, SessionIdentity, SessionManager, UserNotAllowed,
 )
 from .teacher_review import DraftBatchStore, TeacherReviewStore, prepare_draft_preview
-from .ranking import RankingTable, build_ranking
+from .ranking import RankingTable, build_ranking, top_scorers
 from .sheets_export import ranking_to_sheet_values, write_values
 from .settings_templates import SettingsTemplateStore, TemplateScope, TemplateStoreError
 from .mcp_tokens import DEFAULT_DAYS, McpTokenStore
@@ -1219,6 +1219,79 @@ def _sheets_error(exc: Exception) -> HTTPException:
     if status in {400, 404}:
         return HTTPException(status_code=404, detail="指定したスプレッドシート、シート名、または範囲が見つかりません。")
     return HTTPException(status_code=502, detail="Google Sheetsへ出力できませんでした。時間を置いて再試行してください。")
+
+
+def _top_scorers_response(course_id: str, table: RankingTable) -> dict[str, Any]:
+    return {
+        "course_id": course_id,
+        "courseworks": [{
+            "coursework_id": entry.coursework_id,
+            "title": entry.title,
+            "max_points": entry.max_points,
+            "top_score": entry.top_score,
+            "scorer_count": len(entry.scorers),
+            "scorers": [{"student_id": scorer.student_id, "name": scorer.name,
+                         "score": scorer.score} for scorer in entry.scorers],
+        } for entry in top_scorers(table)],
+    }
+
+
+@app.get("/api/v1/courses/{course_id}/top-scorers")
+def v1_course_top_scorers(
+    course_id: str, refresh: bool = False,
+    identity: SessionIdentity = Depends(require_session),
+) -> dict[str, Any]:
+    """各課題の最高点と取得者(同点は全員)。ランキングと同じキャッシュを使う。"""
+    selected = _valid_course_id(course_id)
+    owner_ref = _identity_reference(identity)
+    if not refresh:
+        cached = _ranking_cache_get(owner_ref, selected)
+        if cached is not None:
+            table, age = cached
+            return {**_top_scorers_response(selected, table),
+                    "cached": True, "cache_age_seconds": round(age, 1)}
+    table = _course_ranking_table(identity, selected)
+    _ranking_cache_put(owner_ref, selected, table)
+    return {**_top_scorers_response(selected, table),
+            "cached": False, "cache_age_seconds": 0.0}
+
+
+@app.get("/api/v1/courses/{course_id}/courseworks/{coursework_id}/submissions/{student_id}/answer")
+def v1_submission_answer(
+    course_id: str, coursework_id: str, student_id: str, page: int = 1,
+    identity: SessionIdentity = Depends(require_session),
+) -> dict[str, Any]:
+    """答案の本文またはページ画像を返す(担当コースの教員のみ)。
+
+    最高点答案を手本として確認するために使う。人間が確定した点は変更しない。
+    """
+    selected, cw = _valid_course_id(course_id), _valid_coursework_id(coursework_id)
+    _require_teacher_course(identity, selected)
+    sid = normalize_gid(student_id)
+    if not re.fullmatch(r"[0-9]+", sid):
+        raise HTTPException(status_code=400, detail="student_idが不正です。")
+    paths = CoursePaths(_cfg, selected, cw)
+    row = next((item for item in load_meta(paths)
+                if str(item.get("student_id") or "") == sid), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail="答案が見つかりません。")
+    extracted = submission_text(paths, row)
+    if extracted.get("status") == "ready":
+        return {"course_id": selected, "coursework_id": cw, "student_id": sid,
+                "content_mode": "text", "answer_text": extracted.get("answer_text"),
+                "page_count": extracted.get("page_count"),
+                "untrusted_content": True, "warning": _UNTRUSTED_ANSWER_WARNING}
+    if extracted.get("status") != "visual_required":
+        raise HTTPException(status_code=409, detail="答案を表示できません。答案準備を実行してください。")
+    try:
+        rendered = submission_page(paths, row, page)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if rendered.get("status") != "ready":
+        raise HTTPException(status_code=409, detail="ページを表示できません。")
+    return {"course_id": selected, "coursework_id": cw, "student_id": sid,
+            "content_mode": "image", **rendered,
+            "warning": _UNTRUSTED_ANSWER_WARNING}
 
 
 @app.post("/api/v1/courses/{course_id}/ranking/sheets")
@@ -3198,7 +3271,15 @@ _mcp_server, _mcp_http_app = build_mcp(
         get_results=lambda principal, course_id, coursework_id: v1_course_results(
             course_id, coursework_id, _mcp_identity(principal)),
         get_ranking=lambda principal, course_id: v1_course_ranking(
-            course_id, _mcp_identity(principal)),
+            course_id, False, _mcp_identity(principal)),
+        get_course_top_scorers=lambda principal, course_id: v1_course_top_scorers(
+            course_id, False, _mcp_identity(principal)),
+        export_ranking_to_sheets=lambda principal, course_id, spreadsheet, sheet_name, cell_range: (
+            v1_course_ranking_sheets(
+                course_id,
+                RankingSheetsRequest(spreadsheet=spreadsheet, sheet_name=sheet_name,
+                                     range=cell_range),
+                _mcp_identity(principal))),
         start_full_grading=_mcp_start_full,
         get_job=lambda principal, job_id: get_job(job_id, _mcp_identity(principal)),
         cancel_queued_job=_mcp_cancel,

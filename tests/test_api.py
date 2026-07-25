@@ -1827,3 +1827,76 @@ def test_ranking_is_cached_and_refresh_bypasses_the_cache(client, monkeypatch):
                headers={"X-CSRF-Token": csrf}, json={"score": 9, "confirmed": True})
     after = client.get("/api/v1/courses/200000000001/ranking").json()
     assert after["cached"] is False and len(calls) == 3
+
+
+def test_top_scorers_endpoint_and_answer_view(client, monkeypatch, tmp_path):
+    """最高点取得者APIと、その答案を確認するAPI。"""
+    monkeypatch.setattr(api, "_classroom_for", lambda _identity: object())
+    monkeypatch.setattr(api, "_live_confirmed_grades", lambda *_a, **_k: {"111": 10.0})
+    monkeypatch.setattr("grader.fetch.list_courseworks",
+                        lambda *a, **k: [{"id": "100000000001", "title": "課題",
+                                          "maxPoints": 10}])
+    login(client)
+    body = client.get("/api/v1/courses/200000000001/top-scorers").json()
+    entry = body["courseworks"][0]
+    assert entry["top_score"] == 10.0 and entry["max_points"] == 10
+    assert [s["student_id"] for s in entry["scorers"]] == ["111"]
+    assert body["cached"] is False
+
+    # 答案表示: メタが無ければ404
+    assert client.get(
+        "/api/v1/courses/200000000001/courseworks/100000000001"
+        "/submissions/111/answer").status_code == 404
+    # student_idの検証
+    assert client.get(
+        "/api/v1/courses/200000000001/courseworks/100000000001"
+        "/submissions/abc/answer").status_code == 400
+
+    # テキスト答案を返せること
+    from grader.course_data import CoursePaths
+
+    paths = CoursePaths(api._cfg, "200000000001", "100000000001")
+    paths.root.mkdir(parents=True, exist_ok=True)
+    paths.meta.write_text(json.dumps({"student_id": "111", "state": "TURNED_IN"}),
+                          encoding="utf-8")
+    monkeypatch.setattr(api, "submission_text", lambda *_a: {
+        "status": "ready", "answer_text": "回答本文", "page_count": 1})
+    answer = client.get(
+        "/api/v1/courses/200000000001/courseworks/100000000001"
+        "/submissions/111/answer").json()
+    assert answer["content_mode"] == "text" and answer["answer_text"] == "回答本文"
+    # 答案は信頼できない入力である旨を必ず添える
+    assert answer["untrusted_content"] is True and answer["warning"]
+
+
+def test_mcp_exposes_ranking_top_scorers_and_guarded_sheets_export():
+    """MCPからランキング・最高点取得者を参照でき、Sheets出力はconfirm必須。"""
+    import inspect
+
+    from grader import mcp_server
+
+    source = inspect.getsource(mcp_server)
+    assert "def get_ranking(" in source
+    assert "def get_course_top_scorers(" in source
+    assert "def export_ranking_to_sheets(" in source
+    # 出力は明示確認がないと実行しない
+    export = source[source.index("def export_ranking_to_sheets("):
+                    source.index("def start_full_grading(")]
+    assert "if confirm is not True:" in export
+    assert "READ" in source[source.index("def get_course_top_scorers(") - 60:
+                            source.index("def get_course_top_scorers(")]
+
+
+def test_web_ui_collapses_coursework_list_and_shows_top_scorers():
+    """課題一覧を折りたためること、最高点取得者と答案表示があること。"""
+    import pathlib
+
+    html = pathlib.Path("grader/web/index.html").read_text(encoding="utf-8")
+    js = pathlib.Path("grader/web/app.js").read_text(encoding="utf-8")
+    assert '<details id="courses-details" open>' in html
+    assert 'id="courses-summary"' in html
+    assert 'id="top-scorers"' in html and 'id="answer-dialog"' in html
+    assert "async function loadTopScorers(" in js
+    assert "async function openAnswer(" in js
+    # 折りたたんでも件数が分かる
+    assert "課題一覧（${total}件" in js

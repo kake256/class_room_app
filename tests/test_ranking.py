@@ -157,3 +157,25 @@ def test_ties_are_broken_by_top_score_count():
     # 平均は同じ0.8だが、同点最高点なので両者とも最高点回数2で同率1位
     assert [(row.student_id, row.rank) for row in table.rows] == [("a", 1), ("b", 1)]
     assert all(row.average_rate == 0.8 for row in table.rows)
+
+
+def test_top_scorers_lists_every_holder_and_keeps_empty_courseworks():
+    """課題ごとの最高点と取得者(同点は全員)。確定点が無い課題も欠番にしない。"""
+    from grader.ranking import top_scorers
+
+    table = build_ranking([
+        {"coursework_id": "1", "title": "課題1", "max_points": 10, "rows": [
+            {"student_id": "a", "name": "A", "source": "human", "mapped_score": 10},
+            {"student_id": "b", "name": "B", "source": "human", "mapped_score": 10},
+            {"student_id": "c", "name": "C", "source": "human", "mapped_score": 4},
+        ]},
+        {"coursework_id": "2", "title": "未確定のみ", "max_points": 10, "rows": [
+            {"student_id": "a", "name": "A", "source": "system", "mapped_score": 9},
+        ]},
+    ])
+    entries = {entry.coursework_id: entry for entry in top_scorers(table)}
+    assert entries["1"].top_score == 10
+    assert {s.student_id for s in entries["1"].scorers} == {"a", "b"}
+    assert entries["1"].max_points == 10
+    # 確定点が無い課題はtop_score=Noneで残す
+    assert entries["2"].top_score is None and entries["2"].scorers == ()
