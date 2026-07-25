@@ -126,7 +126,8 @@ def test_web_job_keeps_anonymous_token_ref_and_passes_safe_overrides(tmp_path, m
                                 str(token_root / f"{ref}.json")]
 
 
-def test_full_switches_allowlisted_models_and_runs_all_phases(tmp_path, monkeypatch):
+def test_full_is_single_stage_qwen25_without_refine(tmp_path, monkeypatch):
+    """標準のfullジョブはQwen2.5単独の1段階採点。Qwen3審判(refine)を含めない。"""
     store = JobStore(tmp_path / "jobs")
     commands, switches = [], []
     service = JobService(
@@ -141,9 +142,10 @@ def test_full_switches_allowlisted_models_and_runs_all_phases(tmp_path, monkeypa
     job = service.create("456", "full", JobOptions())
     saved = store.get(job["id"])
     assert saved["status"] == "succeeded"
-    assert saved["completed_steps"] == ["run", "refine", "report"]
-    assert switches == ["run", "refine"]
-    assert [command[3] for command in commands] == ["run", "refine", "report"]
+    assert saved["completed_steps"] == ["run", "report"]
+    # モデル切替は一次採点(Qwen2.5)の1回だけ。Qwen3へは切り替えない。
+    assert switches == ["run"]
+    assert [command[3] for command in commands] == ["run", "report"]
 
 
 def test_confirmed_full_uses_prepare_and_hybrid_with_owner(tmp_path, monkeypatch):
@@ -282,3 +284,25 @@ def test_unparsable_hybrid_output_does_not_fail_the_job(tmp_path, monkeypatch):
     saved = store.get(job["id"])
     assert saved["status"] == "succeeded"
     assert "grading_timestamps" not in saved
+
+
+def test_refine_remains_available_as_a_standalone_diagnostic_phase(tmp_path, monkeypatch):
+    """refineはfullから外したが、診断・比較用に単独フェーズとして実行できる。"""
+    store = JobStore(tmp_path / "jobs")
+    commands, switches = [], []
+    service = JobService(
+        store,
+        runner=lambda command, **_kwargs: (
+            commands.append(command) or subprocess.CompletedProcess(command, 0, "ok", "")
+        ),
+        model_switcher=lambda phase: (switches.append(phase) or True, ""),
+        model_guard=lambda _phase: (True, ""),
+    )
+    monkeypatch.setattr("grader.jobs.threading.Thread.start", lambda self: self.run())
+    job = service.create("456", "refine", JobOptions())
+    saved = store.get(job["id"])
+    assert saved["status"] == "succeeded"
+    assert saved["completed_steps"] == ["refine"]
+    # 単独実行では自動切替せず、管理者が用意したモデルをguardで確認する運用のまま
+    assert switches == []
+    assert [command[3] for command in commands] == ["refine"]

@@ -273,8 +273,12 @@ class JobService:
         if job["phase"] == "full" and job["options"].get("hybrid"):
             # 最新答案を取得してから高速採点案をowner-scoped storeへ保存する。
             phases = ["prepare", "hybrid"]
+        elif job["phase"] == "full":
+            # 標準はQwen2.5単独の1段階採点。Qwen3審判(refine)はfullへ含めない。
+            # refineは診断・比較用として、単独フェーズでのみ実行できる。
+            phases = ["run", "report"]
         else:
-            phases = ["run", "refine", "report"] if job["phase"] == "full" else [job["phase"]]
+            phases = [job["phase"]]
         log_text = ""
         completed_steps = list(job.get("completed_steps") or [])
         try:
