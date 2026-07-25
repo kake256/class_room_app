@@ -26,6 +26,12 @@ def services(calls):
             "created": True, "coursework_id": "789", "state": "DRAFT"},
         publish_classroom_assignment=lambda principal, course_id, coursework_id,
         expected_title: {"published": True, "state": "PUBLISHED"},
+        preview_classroom_announcement=lambda principal, course_id, text: {
+            "preview": True, "announcement": {"text": text}},
+        create_classroom_announcement_draft=lambda principal, course_id, text, key: {
+            "created": True, "announcement_id": "901", "state": "DRAFT"},
+        publish_classroom_announcement=lambda principal, course_id, announcement_id,
+        expected_text: {"published": True, "state": "PUBLISHED"},
         preview_classroom_draft_grades=lambda principal, course_id, coursework_id: {
             "preview": True, "writable_count": 2},
         write_classroom_draft_grades=lambda principal, course_id, coursework_id,
@@ -109,6 +115,8 @@ def test_sdk_initialize_list_read_confirm_and_forbidden_tools(tmp_path):
                 "list_courses", "list_courseworks", "get_readiness", "get_results",
                 "preview_classroom_assignment", "create_classroom_assignment_draft",
                 "publish_classroom_assignment", "preview_classroom_draft_grades",
+                "preview_classroom_announcement", "create_classroom_announcement_draft",
+                "publish_classroom_announcement",
                 "write_classroom_draft_grades",
                 "get_ranking", "get_course_top_scorers", "export_ranking_to_sheets",
                 "start_full_grading", "get_job", "cancel_queued_job",
@@ -130,6 +138,9 @@ def test_sdk_initialize_list_read_confirm_and_forbidden_tools(tmp_path):
             assert annotations["preview_classroom_assignment"].readOnlyHint is True
             assert annotations["create_classroom_assignment_draft"].idempotentHint is True
             assert annotations["publish_classroom_assignment"].idempotentHint is True
+            assert annotations["preview_classroom_announcement"].readOnlyHint is True
+            assert annotations["create_classroom_announcement_draft"].idempotentHint is True
+            assert annotations["publish_classroom_announcement"].idempotentHint is True
             assert annotations["preview_classroom_draft_grades"].readOnlyHint is True
             assert annotations["write_classroom_draft_grades"].idempotentHint is True
             assert annotations["start_full_grading"].readOnlyHint is False
@@ -182,6 +193,10 @@ def test_sdk_initialize_list_read_confirm_and_forbidden_tools(tmp_path):
                     "course_id": "123", "title": "Draft", "idempotency_key": "request_key_123"}),
                 ("publish_classroom_assignment", {
                     "course_id": "123", "coursework_id": "456", "expected_title": "Draft"}),
+                ("create_classroom_announcement_draft", {
+                    "course_id": "123", "text": "連絡", "idempotency_key": "announce_key_123"}),
+                ("publish_classroom_announcement", {
+                    "course_id": "123", "announcement_id": "901", "expected_text": "連絡"}),
                 ("write_classroom_draft_grades", {
                     "course_id": "123", "coursework_id": "456", "expected_title": "Draft",
                     "expected_writable_count": 2, "idempotency_key": "draft_grades_123"}),
@@ -205,6 +220,18 @@ def test_sdk_initialize_list_read_confirm_and_forbidden_tools(tmp_path):
                     "course_id": "123", "title": "Draft", "max_points": 10,
                     "idempotency_key": "request_key_123", "confirm": True}))
             assert created.isError is False and created.structuredContent["state"] == "DRAFT"
+
+            # お知らせもプレビューは書込まず、作成はconfirm付きで下書きになる
+            announced = await client_scenario(app, made["token"], lambda session: session.call_tool(
+                "preview_classroom_announcement", {"course_id": "123", "text": "連絡"}))
+            assert announced.isError is False and announced.structuredContent["preview"] is True
+            announce_created = await client_scenario(
+                app, made["token"], lambda session: session.call_tool(
+                    "create_classroom_announcement_draft", {
+                        "course_id": "123", "text": "連絡",
+                        "idempotency_key": "announce_key_123", "confirm": True}))
+            assert announce_created.isError is False
+            assert announce_created.structuredContent["state"] == "DRAFT"
 
             grade_preview = await client_scenario(
                 app, made["token"], lambda session: session.call_tool(

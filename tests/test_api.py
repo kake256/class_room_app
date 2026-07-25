@@ -63,6 +63,9 @@ def client(tmp_path, monkeypatch):
         tmp_path / "draft_input_jobs"))
     monkeypatch.setattr(api, "_coursework_actions", CourseworkActionStore(
         tmp_path / "mcp_coursework_actions"))
+    monkeypatch.setattr(api, "_announcement_actions", CourseworkActionStore(
+        tmp_path / "mcp_announcement_actions",
+        subject="お知らせ", id_field="announcement_id"))
     monkeypatch.setattr(api, "_mcp_tokens", McpTokenStore(tmp_path / "mcp_tokens.json"))
     monkeypatch.setattr(api, "_external_proposals", ExternalProposalStore(
         api._cfg, secret=b"e" * 32))
@@ -202,15 +205,47 @@ class _FakeStudentSubmissionsService:
         return _FakeGoogleRequest(value)
 
 
+class _FakeAnnouncementService:
+    def __init__(self):
+        self.create_calls = []
+        self.patch_calls = []
+        self.current = {
+            "id": "500000000001", "courseId": "200000000001", "text": "休講のお知らせ",
+            "state": "DRAFT",
+        }
+
+    def create(self, **kwargs):
+        self.create_calls.append(kwargs)
+        return _FakeGoogleRequest({
+            "id": "500000000001", "courseId": kwargs["courseId"],
+            "text": kwargs["body"]["text"], "state": kwargs["body"]["state"],
+        })
+
+    def get(self, **_kwargs):
+        return _FakeGoogleRequest(self.current)
+
+    def patch(self, **kwargs):
+        self.patch_calls.append(kwargs)
+        self.current = {
+            **self.current, "state": "PUBLISHED",
+            "alternateLink": "https://classroom.google.com/c/mock/p/mock",
+        }
+        return _FakeGoogleRequest(self.current)
+
+
 class _FakeGoogleService:
     def __init__(self):
         self.coursework = _FakeCourseWorkService()
+        self.announcement = _FakeAnnouncementService()
 
     def courses(self):
         return self
 
     def courseWork(self):
         return self.coursework
+
+    def announcements(self):
+        return self.announcement
 
 
 def test_mcp_assignment_preview_create_is_draft_and_idempotent(
@@ -1915,3 +1950,76 @@ def test_web_ui_collapses_coursework_list_and_shows_top_scorers():
     assert "async function openAnswer(" in js
     # 折りたたんでも件数が分かる
     assert "課題一覧（${total}件" in js
+
+
+def test_mcp_announcement_preview_create_is_draft_and_idempotent(client, monkeypatch):
+    principal = McpPrincipal("a" * 64, "grader")
+    google = _FakeGoogleService()
+    monkeypatch.setattr(api, "_classroom_for", lambda _identity: google)
+    preview = api._mcp_preview_classroom_announcement(
+        principal, "200000000001", "休講のお知らせ")
+    assert preview["preview"] is True and preview["classroom_written"] is False
+    # 素材(添付・リンク)と個別配信は扱わない
+    assert preview["announcement"] == {
+        "text": "休講のお知らせ", "state": "DRAFT", "assigneeMode": "ALL_STUDENTS"}
+    assert google.announcement.create_calls == []
+    created = api._mcp_create_classroom_announcement_draft(
+        principal, "200000000001", "休講のお知らせ", "announcement_test_001")
+    assert created["state"] == "DRAFT" and created["classroom_written"] is True
+    assert created["announcement_id"] == "500000000001"
+    assert google.announcement.create_calls[0]["body"]["state"] == "DRAFT"
+    repeated = api._mcp_create_classroom_announcement_draft(
+        principal, "200000000001", "休講のお知らせ", "announcement_test_001")
+    assert repeated["replayed"] is True and len(google.announcement.create_calls) == 1
+    with pytest.raises(api.HTTPException) as mismatch:
+        api._mcp_create_classroom_announcement_draft(
+            principal, "200000000001", "別のお知らせ", "announcement_test_001")
+    assert mismatch.value.status_code == 409
+    with pytest.raises(api.HTTPException) as empty:
+        api._mcp_create_classroom_announcement_draft(
+            principal, "200000000001", "   ", "announcement_test_002")
+    assert empty.value.status_code == 400
+
+
+def test_mcp_announcement_publish_requires_own_draft_and_exact_text(client, monkeypatch):
+    principal = McpPrincipal("a" * 64, "grader")
+    other = McpPrincipal("b" * 64, "grader")
+    google = _FakeGoogleService()
+    monkeypatch.setattr(api, "_classroom_for", lambda _identity: google)
+    # 作成記録が無いお知らせは、本文が一致しても公開しない
+    with pytest.raises(api.HTTPException) as unknown:
+        api._mcp_publish_classroom_announcement(
+            principal, "200000000001", "500000000001", "休講のお知らせ")
+    assert unknown.value.status_code == 409 and google.announcement.patch_calls == []
+    api._mcp_create_classroom_announcement_draft(
+        principal, "200000000001", "休講のお知らせ", "announcement_publish_001")
+    # 別のMCP利用者は公開できない
+    with pytest.raises(api.HTTPException) as foreign:
+        api._mcp_publish_classroom_announcement(
+            other, "200000000001", "500000000001", "休講のお知らせ")
+    assert foreign.value.status_code == 409 and google.announcement.patch_calls == []
+    with pytest.raises(api.HTTPException) as mismatch:
+        api._mcp_publish_classroom_announcement(
+            principal, "200000000001", "500000000001", "違う本文")
+    assert mismatch.value.status_code == 409 and google.announcement.patch_calls == []
+    published = api._mcp_publish_classroom_announcement(
+        principal, "200000000001", "500000000001", "休講のお知らせ")
+    assert published["state"] == "PUBLISHED" and published["classroom_written"] is True
+    assert google.announcement.patch_calls[0]["updateMask"] == "state"
+    assert google.announcement.patch_calls[0]["body"] == {"state": "PUBLISHED"}
+    repeated = api._mcp_publish_classroom_announcement(
+        principal, "200000000001", "500000000001", "休講のお知らせ")
+    assert repeated["already_published"] is True
+    assert len(google.announcement.patch_calls) == 1
+
+
+def test_oauth_scopes_include_announcements_and_require_reconsent():
+    from grader import google_auth
+
+    assert google_auth.ANNOUNCEMENTS_SCOPE in google_auth.OAUTH_SCOPES
+    # CLI用SCOPESへは追加しない(お知らせはMCP/Web経由の明示操作だけ)
+    from grader.fetch import SCOPES
+
+    assert google_auth.ANNOUNCEMENTS_SCOPE not in SCOPES
+    assert set(google_auth.ADDED_SCOPES) == {
+        google_auth.SHEETS_SCOPE, google_auth.ANNOUNCEMENTS_SCOPE}

@@ -138,6 +138,11 @@ _draft_input_jobs = DraftInputJobStore(
     ttl_seconds=int(_cfg.get("draft_input_jobs", "ttl_seconds", default=3600)),
 )
 _coursework_actions = CourseworkActionStore(_cfg.data_dir / "mcp_coursework_actions")
+# お知らせにはassociatedWithDeveloper相当が無いため、この記録が
+# 「本システムが作成したお知らせか」を判定する唯一の根拠になる。
+_announcement_actions = CourseworkActionStore(
+    _cfg.data_dir / "mcp_announcement_actions",
+    subject="お知らせ", id_field="announcement_id")
 if _static_dir.exists():
     app.mount("/ui/static", StaticFiles(directory=_static_dir), name="ui-static")
 
@@ -2485,6 +2490,162 @@ def _mcp_publish_classroom_assignment(
     }
 
 
+def _valid_announcement_id(value: str) -> str:
+    announcement_id = normalize_gid(value)
+    if not re.fullmatch(r"[0-9]+", announcement_id):
+        raise HTTPException(status_code=400, detail="announcement_idが不正です")
+    return announcement_id
+
+
+def _announcement_body(text: str) -> dict[str, Any]:
+    """全学生向けお知らせ下書きの本体。素材(リンク・添付)は受け付けない。"""
+    return {
+        "text": _assignment_text(text, "text", minimum=1, maximum=30000),
+        "state": "DRAFT", "assigneeMode": "ALL_STUDENTS",
+    }
+
+
+_ANNOUNCEMENT_FIELDS = "id,text,state,courseId,alternateLink"
+
+
+def _mcp_preview_classroom_announcement(
+    principal: McpPrincipal, course_id: str, text: str,
+) -> dict[str, Any]:
+    identity = _mcp_identity(principal)
+    selected = _valid_course_id(course_id)
+    course = _require_teacher_course(identity, selected)
+    body = _announcement_body(text)
+    return {
+        "preview": True, "classroom_written": False, "course_id": selected,
+        "course_name": course.get("name") or "", "announcement": body,
+        "next_step": (
+            "内容を利用者に提示し、承認後に同じ内容と新しいidempotency_keyを指定して"
+            "create_classroom_announcement_draft(confirm=true)を呼び出してください。"),
+    }
+
+
+def _mcp_create_classroom_announcement_draft(
+    principal: McpPrincipal, course_id: str, text: str, idempotency_key: str,
+) -> dict[str, Any]:
+    identity = _mcp_identity(principal)
+    selected = _valid_course_id(course_id)
+    course = _require_teacher_course(identity, selected)
+    body = _announcement_body(text)
+    request_fingerprint = _announcement_actions.request_fingerprint({
+        "course_id": selected, "announcement": body,
+    })
+    try:
+        previous = _announcement_actions.begin(
+            principal.owner_ref, idempotency_key, request_fingerprint)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if previous is not None:
+        return {**previous, "replayed": True}
+    try:
+        created = _classroom_for(identity).courses().announcements().create(
+            courseId=selected, body=body, fields=_ANNOUNCEMENT_FIELDS,
+        ).execute()
+    except HTTPException:
+        _announcement_actions.release(principal.owner_ref, idempotency_key, request_fingerprint)
+        raise
+    except Exception as exc:  # noqa: BLE001 Google応答を公開しない
+        if getattr(getattr(exc, "resp", None), "status", None) is not None:
+            _announcement_actions.release(
+                principal.owner_ref, idempotency_key, request_fingerprint)
+        else:
+            _announcement_actions.mark_uncertain(
+                principal.owner_ref, idempotency_key, request_fingerprint)
+        raise _safe_classroom_mutation_error(exc, "お知らせ下書き作成") from exc
+    announcement_id = str(created.get("id") or "")
+    if not re.fullmatch(r"[0-9]+", announcement_id):
+        _announcement_actions.mark_uncertain(
+            principal.owner_ref, idempotency_key, request_fingerprint)
+        raise HTTPException(
+            status_code=502,
+            detail="お知らせは作成された可能性がありますがIDを確認できません。Classroomを確認してください。",
+        )
+    result = {
+        "created": True, "replayed": False, "classroom_written": True,
+        "course_id": selected, "course_name": course.get("name") or "",
+        "announcement_id": announcement_id, "state": created.get("state") or "DRAFT",
+        "published_link": created.get("alternateLink"),
+    }
+    try:
+        _announcement_actions.complete(
+            principal.owner_ref, idempotency_key, request_fingerprint, result)
+    except RuntimeError as exc:
+        _announcement_actions.mark_uncertain(
+            principal.owner_ref, idempotency_key, request_fingerprint)
+        raise HTTPException(
+            status_code=502,
+            detail="お知らせ下書きは作成されましたが履歴保存に失敗しました。再実行せず管理者に確認してください。",
+        ) from exc
+    _audit.append(actor=identity.sub, action="classroom.announcement.create_draft",
+                  course=selected, cw=announcement_id, outcome="success")
+    return result
+
+
+def _mcp_publish_classroom_announcement(
+    principal: McpPrincipal, course_id: str, announcement_id: str, expected_text: str,
+) -> dict[str, Any]:
+    identity = _mcp_identity(principal)
+    selected = _valid_course_id(course_id)
+    target = _valid_announcement_id(announcement_id)
+    _require_teacher_course(identity, selected)
+    text = _assignment_text(expected_text, "expected_text", minimum=1, maximum=30000)
+    # お知らせにはassociatedWithDeveloperが無いので、作成記録で所有者を確認する。
+    try:
+        owned = _announcement_actions.created_by_owner(principal.owner_ref, selected, target)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not owned:
+        raise HTTPException(
+            status_code=409,
+            detail="このMCP利用者が本システムから作成したお知らせだけ公開できます。",
+        )
+    service = _classroom_for(identity)
+    try:
+        current = service.courses().announcements().get(
+            courseId=selected, id=target, fields=_ANNOUNCEMENT_FIELDS,
+        ).execute()
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise _safe_classroom_error(exc, "公開対象お知らせ") from exc
+    if (current.get("text") or "") != text:
+        raise HTTPException(
+            status_code=409,
+            detail="expected_textが現在のお知らせ本文と一致しないため公開しません。",
+        )
+    if current.get("state") == "PUBLISHED":
+        return {
+            "published": True, "already_published": True, "classroom_written": False,
+            "course_id": selected, "announcement_id": target, "state": "PUBLISHED",
+            "published_link": current.get("alternateLink"),
+        }
+    if current.get("state") != "DRAFT":
+        raise HTTPException(status_code=409, detail="DRAFT状態のお知らせだけ公開できます。")
+    try:
+        published = service.courses().announcements().patch(
+            courseId=selected, id=target, updateMask="state",
+            body={"state": "PUBLISHED"}, fields=_ANNOUNCEMENT_FIELDS,
+        ).execute()
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise _safe_classroom_mutation_error(exc, "お知らせ公開") from exc
+    _audit.append(actor=identity.sub, action="classroom.announcement.publish",
+                  course=selected, cw=target, outcome="success")
+    return {
+        "published": True, "already_published": False, "classroom_written": True,
+        "course_id": selected, "announcement_id": target,
+        "state": published.get("state") or "PUBLISHED",
+        "published_link": published.get("alternateLink"),
+    }
+
+
 def _draft_grade_skip_count(items: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for item in items:
@@ -3264,6 +3425,9 @@ _mcp_server, _mcp_http_app = build_mcp(
         preview_classroom_assignment=_mcp_preview_classroom_assignment,
         create_classroom_assignment_draft=_mcp_create_classroom_assignment_draft,
         publish_classroom_assignment=_mcp_publish_classroom_assignment,
+        preview_classroom_announcement=_mcp_preview_classroom_announcement,
+        create_classroom_announcement_draft=_mcp_create_classroom_announcement_draft,
+        publish_classroom_announcement=_mcp_publish_classroom_announcement,
         preview_classroom_draft_grades=_mcp_preview_classroom_draft_grades,
         write_classroom_draft_grades=_mcp_write_classroom_draft_grades,
         get_readiness=lambda principal, course_id, coursework_id: v1_coursework_readiness(

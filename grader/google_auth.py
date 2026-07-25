@@ -57,8 +57,13 @@ OAUTH_SCOPES = [
     *SCOPES,
     # Web UIの明示操作によるランキング出力専用。CLI用SCOPESには追加しない。
     "https://www.googleapis.com/auth/spreadsheets",
+    # MCPの明示確認によるお知らせ下書き作成・公開専用。CLI用SCOPESには追加しない。
+    "https://www.googleapis.com/auth/classroom.announcements",
 ]
 SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
+ANNOUNCEMENTS_SCOPE = "https://www.googleapis.com/auth/classroom.announcements"
+# 既存tokenに後から追加したscope。欠けていれば再同意を求める。
+ADDED_SCOPES = (SHEETS_SCOPE, ANNOUNCEMENTS_SCOPE)
 
 
 def token_reference(sub: str) -> str:
@@ -197,6 +202,7 @@ class GoogleOAuthManager:
             "connected": False,
             "needs_reconnect": False,
             "sheets_scope_granted": False,
+            "announcements_scope_granted": False,
             "redirect_uri": self.redirect_uri,
         }
         try:
@@ -221,6 +227,8 @@ class GoogleOAuthManager:
                     token_expired=bool(creds.expired),
                     has_refresh_token=bool(creds.refresh_token),
                     sheets_scope_granted=bool(creds.has_scopes([SHEETS_SCOPE])),
+                    announcements_scope_granted=bool(
+                        creds.has_scopes([ANNOUNCEMENTS_SCOPE])),
                 )
             except Exception:  # noqa: BLE001 壊れた/旧形式tokenは状態表示で失敗させない
                 pass
@@ -232,7 +240,8 @@ class GoogleOAuthManager:
         )
         out["needs_reconnect"] = bool(
             out["credentials_valid"]
-            and (not out["connected"] or not out["sheets_scope_granted"])
+            and (not out["connected"] or not out["sheets_scope_granted"]
+                 or not out["announcements_scope_granted"])
         )
         return out
 
@@ -247,9 +256,9 @@ class GoogleOAuthManager:
             credentials = Credentials.from_authorized_user_file(str(path))
         except Exception as exc:  # noqa: BLE001 token内容を例外へ含めない
             raise OAuthConfigurationError("Googleへ再ログインしてください。") from exc
-        if not credentials.has_scopes([SHEETS_SCOPE]):
+        if not credentials.has_scopes(list(ADDED_SCOPES)):
             raise OAuthConfigurationError(
-                "Google Sheetsへの書込権限を追加するため、Googleへ再ログインしてください。"
+                "Sheets出力とお知らせ投稿の権限を追加するため、Googleへ再ログインしてください。"
             )
         return credentials
 

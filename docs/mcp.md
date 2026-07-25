@@ -2,9 +2,9 @@
 
 `/mcp` は `mcp==1.27.2` の FastMCP による stateless Streamable HTTP endpointです。
 応答はJSONで、Web UIと同じGoogle利用者・教師コース認可、JobService、ローカル結果を使います。
-MCPは課題の下書き作成・公開、採点基準設定、答案準備・取得、採点案保存、
+MCPは課題・お知らせの下書き作成・公開、採点基準設定、答案準備・取得、採点案保存、
 拡張用待機バッチ作成までを扱います。Classroomへの直接書込みは、明示確認済みの
-課題下書き作成・公開と、同じMCP利用者が作成した課題の空欄`draftGrade`入力だけです。
+課題・お知らせの下書き作成・公開と、同じMCP利用者が作成した課題の空欄`draftGrade`入力だけです。
 点数確定、返却、提出取消、Sheets書込み、
 任意shell・任意path操作は提供しません。
 
@@ -60,10 +60,12 @@ claude mcp add --transport http classroom-grader https://YOUR-HOST.example/mcp \
   - `list_courses`
   - `list_courseworks`
   - `preview_classroom_assignment`
+  - `preview_classroom_announcement`
   - `preview_classroom_draft_grades`
   - `get_readiness`
   - `get_results`
   - `get_ranking`
+  - `get_course_top_scorers`
   - `get_job`
   - `get_assignment_context`
   - `list_ungraded_submissions`
@@ -78,19 +80,23 @@ claude mcp add --transport http classroom-grader https://YOUR-HOST.example/mcp \
   - `prepare_assignment_for_grading`
   - `create_draft_batch`
   - `create_extension_pairing`
+  - `export_ranking_to_sheets`
   - `create_classroom_draft_input_job`
   - `cancel_classroom_draft_input_job`
 - 冪等upsert（`readOnly=false`, `destructive=false`, `idempotent=true`）:
   - `create_classroom_assignment_draft`
   - `publish_classroom_assignment`
+  - `create_classroom_announcement_draft`
+  - `publish_classroom_announcement`
   - `write_classroom_draft_grades`
   - `submit_grading_proposal`
   - `submit_grading_proposals_batch`（推奨。最大3件を全件検証後に一括保存）
   - `set_assignment_grading_policy`
   - `retry_classroom_draft_input_job`
 
-合計29 toolです。`create_classroom_assignment_draft`、`publish_classroom_assignment`、
-`write_classroom_draft_grades`、
+合計34 toolです。`create_classroom_assignment_draft`、`publish_classroom_assignment`、
+`create_classroom_announcement_draft`、`publish_classroom_announcement`、
+`write_classroom_draft_grades`、`export_ranking_to_sheets`、
 `start_full_grading`、`prepare_assignment_for_grading`、`create_draft_batch`、
 `create_extension_pairing`、`create_classroom_draft_input_job`、`retry_classroom_draft_input_job`は
 `confirm=true`がない限り拒否されます。
@@ -112,6 +118,23 @@ claude mcp add --transport http classroom-grader https://YOUR-HOST.example/mcp \
 公開できるのは、現在のGoogle APIプロジェクトが作成した`DRAFT`で、
 `expected_title`が完全一致する課題だけです。Classroom画面で手作業作成した既存下書きの
 コピーや公開は対象外です。
+
+## MCPからのお知らせ作成・公開
+
+課題と同じ手順です。`preview_classroom_announcement`で本文を検証・提示し、承認後に
+`create_classroom_announcement_draft(confirm=true)`で`DRAFT`のお知らせを作り、
+公開を明示承認した後に`expected_text`へ本文を完全一致で再入力して
+`publish_classroom_announcement(confirm=true)`を呼びます。
+
+課題との違い:
+
+- 本文(`text`)だけを扱います。添付・リンクなどの素材と個別学生への配信は提供しません。
+- お知らせのAPIには`associatedWithDeveloper`に相当する項目がありません。そのため
+  「同じMCP利用者が本システムから作成した」という作成履歴だけを所有の根拠とし、
+  記録の無いお知らせは本文が一致しても公開しません。
+- 追加OAuth scope `classroom.announcements` が必要です。既存tokenには含まれないため、
+  Web UIの「Google権限を再接続」で再同意するまでお知らせ機能は使えません。
+  CLI用の`SCOPES`には追加していません。
 
 ### MCP作成課題への直接下書き点入力
 

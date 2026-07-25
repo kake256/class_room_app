@@ -1,4 +1,10 @@
-"""Idempotency records for MCP-created Google Classroom coursework."""
+"""Idempotency records for MCP-created Google Classroom coursework/announcements.
+
+`subject`と`id_field`を変えることで、課題とお知らせで別々の記録領域を持つ
+同じ仕組みを使う。記録は「このMCP利用者が本システムから作成したもの」の
+唯一の根拠になるため(お知らせにはassociatedWithDeveloper相当が無い)、
+作成完了の記録だけをownedとみなす。
+"""
 from __future__ import annotations
 
 import hashlib
@@ -19,9 +25,12 @@ KEY_RE = re.compile(r"[A-Za-z0-9_-]{12,128}")
 class CourseworkActionStore:
     """Persist create reservations so retries cannot duplicate assignments."""
 
-    def __init__(self, root: pathlib.Path, *, clock: Callable[[], float] = time.time):
+    def __init__(self, root: pathlib.Path, *, clock: Callable[[], float] = time.time,
+                 subject: str = "課題", id_field: str = "coursework_id"):
         self.root = root
         self.clock = clock
+        self.subject = subject
+        self.id_field = id_field
         self.lock = threading.RLock()
 
     @staticmethod
@@ -49,14 +58,14 @@ class CourseworkActionStore:
         return self.root / self._owner(owner_ref) / f"{digest}.json"
 
     def created_by_owner(
-        self, owner_ref: str, course_id: str, coursework_id: str,
+        self, owner_ref: str, course_id: str, object_id: str,
     ) -> bool:
-        """Return whether this owner completed creation of the exact coursework."""
+        """Return whether this owner completed creation of the exact object."""
         owner_dir = self.root / self._owner(owner_ref)
         try:
             paths = list(owner_dir.glob("*.json")) if owner_dir.exists() else []
         except OSError as exc:
-            raise RuntimeError("課題作成履歴を確認できません。") from exc
+            raise RuntimeError(f"{self.subject}作成履歴を確認できません。") from exc
         with self.lock:
             for path in paths:
                 value = self._load(path)
@@ -65,20 +74,20 @@ class CourseworkActionStore:
                         and isinstance(result, dict)
                         and result.get("created") is True
                         and str(result.get("course_id")) == str(course_id)
-                        and str(result.get("coursework_id")) == str(coursework_id)):
+                        and str(result.get(self.id_field)) == str(object_id)):
                     return True
         return False
 
-    @staticmethod
-    def _load(path: pathlib.Path) -> dict[str, Any] | None:
+    def _load(self, path: pathlib.Path) -> dict[str, Any] | None:
         if not path.exists():
             return None
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
-            raise RuntimeError("課題作成履歴を確認できません。管理者に確認してください。") from exc
+            raise RuntimeError(
+                f"{self.subject}作成履歴を確認できません。管理者に確認してください。") from exc
         if not isinstance(value, dict):
-            raise RuntimeError("課題作成履歴を確認できません。管理者に確認してください。")
+            raise RuntimeError(f"{self.subject}作成履歴を確認できません。管理者に確認してください。")
         return value
 
     def begin(
@@ -90,11 +99,11 @@ class CourseworkActionStore:
             previous = self._load(path)
             if previous:
                 if previous.get("request_fingerprint") != request_fingerprint:
-                    raise ValueError("同じidempotency_keyを異なる課題内容には使用できません。")
+                    raise ValueError(f"同じidempotency_keyを異なる{self.subject}内容には使用できません。")
                 if previous.get("status") == "completed" and isinstance(previous.get("result"), dict):
                     return dict(previous["result"])
                 raise RuntimeError(
-                    "同じ課題作成要求が処理中または結果不明です。"
+                    f"同じ{self.subject}作成要求が処理中または結果不明です。"
                     "Classroomの下書きを確認してから管理者に相談してください。")
             try:
                 _atomic_json(path, {
@@ -102,7 +111,7 @@ class CourseworkActionStore:
                     "created_at": int(self.clock()),
                 })
             except OSError as exc:
-                raise RuntimeError("課題作成履歴を開始できません。") from exc
+                raise RuntimeError(f"{self.subject}作成履歴を開始できません。") from exc
         return None
 
     def complete(
@@ -112,14 +121,14 @@ class CourseworkActionStore:
         with self.lock:
             current = self._load(path)
             if not current or current.get("request_fingerprint") != request_fingerprint:
-                raise RuntimeError("課題作成履歴を更新できません。")
+                raise RuntimeError(f"{self.subject}作成履歴を更新できません。")
             try:
                 _atomic_json(path, {
                     **current, "status": "completed", "completed_at": int(self.clock()),
                     "result": result,
                 })
             except OSError as exc:
-                raise RuntimeError("課題作成履歴を更新できません。") from exc
+                raise RuntimeError(f"{self.subject}作成履歴を更新できません。") from exc
 
     def release(self, owner_ref: str, key: str, request_fingerprint: str) -> None:
         """Release only a request known to have failed before creation."""
@@ -130,7 +139,7 @@ class CourseworkActionStore:
                 try:
                     path.unlink(missing_ok=True)
                 except OSError as exc:
-                    raise RuntimeError("課題作成履歴を解放できません。") from exc
+                    raise RuntimeError(f"{self.subject}作成履歴を解放できません。") from exc
 
     def mark_uncertain(self, owner_ref: str, key: str, request_fingerprint: str) -> None:
         path = self._path(owner_ref, key)
@@ -142,4 +151,4 @@ class CourseworkActionStore:
                         **current, "status": "uncertain", "updated_at": int(self.clock()),
                     })
                 except OSError as exc:
-                    raise RuntimeError("課題作成履歴を更新できません。") from exc
+                    raise RuntimeError(f"{self.subject}作成履歴を更新できません。") from exc
