@@ -32,3 +32,4 @@ __pycache__/
 
 # Tailscale認証キー等の環境変数
 .env
+.env.*
