@@ -1511,3 +1511,23 @@ def test_visual_max_score_saturation_disables_row_priority_only():
                                 if not line.strip().startswith("//"))
     assert "automatic_eligible" not in saturation_code
     assert "proposal_state" not in saturation_code
+
+
+def test_review_timer_starts_on_row_activation_not_on_list_render():
+    """確認所要時間は一覧描画時に全行へ一括開始しない。
+
+    行をアクティブ化(点数欄フォーカス/行クリック)した時点で開始し、
+    同時に進行するタイマーは1件だけとする。
+    """
+    import pathlib
+
+    source = pathlib.Path("grader/web/app.js").read_text(encoding="utf-8")
+    # renderRows内で全行へ開始時刻を設定していないこと
+    render = source[source.index("function renderRows(){"):]
+    assert "reviewOpenedAt.set(" not in render
+    # アクティブ化で開始し、直前の行は破棄する(同時進行は1件)
+    assert "function activateReview(studentId){" in source
+    assert "if(activeReviewStudentId===studentId)return;" in source
+    assert "if(activeReviewStudentId!==null)reviewOpenedAt.delete(activeReviewStudentId);" in source
+    assert 'input.addEventListener("focus",()=>activateReview(r.student_id));' in source
+    assert 'tr.addEventListener("click",()=>activateReview(r.student_id));' in source
