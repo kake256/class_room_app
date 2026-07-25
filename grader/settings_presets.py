@@ -25,9 +25,9 @@ KANSOU_RATIO = {"0": 0.0, "1": 0.8, "2": 0.9, "3": 1.0}
 EXPERIMENT_RATIO = {"0": 0.0, "1": 0.6, "2": 0.8, "3": 1.0}
 
 PRESETS: dict[str, dict[str, Any]] = {
-    "kansou_lecture": {
-        "label": "感想文・特別講義(ソニー特別講義の確認済み基準)",
-        "description": "講義の感想・まとめ課題。実運用で教員が確認済みにした基準。",
+    "kansou": {
+        "label": "感想（感想文・まとめ・特別講義）",
+        "description": "講義の感想・まとめ・質問レポート。ソニー特別講義で確認済みの配分を使う。",
         "rubric_key": "KANSOU",
         "ratio": KANSOU_RATIO,
         "notes": (
@@ -42,25 +42,8 @@ PRESETS: dict[str, dict[str, Any]] = {
             "3": "具体的な内容を踏まえ、深い考察や自身の経験・将来との関連が書かれている",
         },
     },
-    "kansou_summary": {
-        "label": "まとめ・質問レポート(MLP課題の基準)",
-        "description": "講義内容のまとめや質問をまとめる課題。実験レポート形式ではない。",
-        "rubric_key": "KANSOU",
-        "ratio": KANSOU_RATIO,
-        "notes": (
-            "講義内容のまとめ・質問レポート。実験レポートの形式は要求しない。"
-            "具体的なトピック・技術名への言及、理解の正確さ、自分の考えの3点で評価する。"
-            "簡略でも本質的に正しい説明があれば0点にはしない。"
-        ),
-        "levels": {
-            "0": "まとめ・質問の記述がない、または課題と無関係",
-            "1": "まとめはあるが抽象的な言及にとどまる",
-            "2": "具体的なトピックに言及し、内容を自分の言葉で整理できている",
-            "3": "正確な理解に加え、自分の考察・疑問・関連づけが書かれている",
-        },
-    },
     "research": {
-        "label": "調査課題(社会実装事例の調査)",
+        "label": "調査系（社会実装事例などの調査）",
         "description": "実在する製品・サービスを調べ、技術と情報源を示す課題。",
         "rubric_key": "RESEARCH",
         "ratio": EXPERIMENT_RATIO,
@@ -76,14 +59,16 @@ PRESETS: dict[str, dict[str, Any]] = {
         },
     },
     "experiment": {
-        "label": "演習・実験レポート(汎用)",
-        "description": "パラメータを変えて識別率や境界を比較する演習課題。",
+        "label": "演習系（実験・演習レポート）",
+        "description": "実験・演習レポート全般。距離計算やk-NNなど個別要求は課題ごとに調整する。",
         "rubric_key": "EXPERIMENT",
         "ratio": EXPERIMENT_RATIO,
         "notes": (
             "演習・実験レポート。実験結果の提示がなければ0点。"
             "定量的評価(複数条件の比較と最良条件)、実験方法と定性的評価、考察の3点で評価する。"
             "図表中で最良条件が一意に読み取れる場合は本文での再宣言を求めない。"
+            "課題固有の要求(距離計算のテスト点識別、k-NNのkd-tree調査など)は"
+            "適用後に課題ごとへ追記して調整する。"
         ),
         "levels": {
             "0": "実験結果(グラフまたは識別率の数値)の提示がない",
@@ -92,53 +77,20 @@ PRESETS: dict[str, dict[str, Any]] = {
             "3": "最良条件の特定、方法の説明、考察がそろっている",
         },
     },
-    "distance": {
-        "label": "距離計算(専用基準)",
-        "description": "テスト点の識別と距離尺度の比較。識別率一覧は要求しない。",
-        "rubric_key": "DISTANCE",
-        "ratio": EXPERIMENT_RATIO,
-        "notes": (
-            "距離計算による識別の課題。テスト点の識別結果、プログラム変更の説明、"
-            "ユークリッド距離とマハラノビス距離の比較考察で評価する。"
-            "この課題には識別率の一覧や最良パラメータは存在しないため、その欠如で減点しない。"
-        ),
-        "levels": {
-            "0": "距離計算による識別への取り組みの記述がない",
-            "1": "識別結果の提示のみで根拠・説明が不足",
-            "2": "識別結果を根拠とともに示し、変更内容も説明できている",
-            "3": "両距離の識別結果、変更説明、距離尺度の比較考察がそろっている",
-        },
-    },
-    "knn": {
-        "label": "k-NN(専用基準)",
-        "description": "kの変化による境界観察とkd-tree調査。識別率一覧は要求しない。",
-        "rubric_key": "KNN",
-        "ratio": EXPERIMENT_RATIO,
-        "notes": (
-            "k-NN実習の課題。kを変えた境界変化の観察、変更箇所とkの解釈、"
-            "kd-tree法の調査で評価する。"
-            "識別率の数値一覧や最良のkの特定はこの課題では要求されていないため、"
-            "その欠如で減点しない。"
-        ),
-        "levels": {
-            "0": "k-NN実習への取り組みの記述がない",
-            "1": "1条件のみの実行結果、または変化の記述が曖昧",
-            "2": "複数のkで境界変化を観察し、変更箇所を示している",
-            "3": "境界変化の観察、kの解釈、kd-tree調査がそろっている",
-        },
-    },
 }
 
 # 課題キー(config.yamlのassignments)からプリセットを推定するための対応。
 # 一致しない課題では推定せず、利用者がプリセットを選ぶ。
 ASSIGNMENT_KEY_TO_PRESET = {
-    "kansou1": "kansou_lecture", "tokubetsu0511": "kansou_lecture",
-    "ai_kansou": "kansou_lecture", "sukina_kansou": "kansou_summary",
-    "mlp_kansou": "kansou_summary", "mlp": "experiment",
+    # 感想・まとめ系
+    "kansou1": "kansou", "tokubetsu0511": "kansou", "ai_kansou": "kansou",
+    "sukina_kansou": "kansou", "mlp_kansou": "kansou",
+    # 調査系
     "application_research": "research",
+    # 演習・実験系(距離計算・k-NNの専用要求は適用後に個別調整する)
     "rf": "experiment", "svm": "experiment", "adaboost": "experiment",
-    "sukina": "experiment", "face_detection": "experiment",
-    "distance": "distance", "knn": "knn",
+    "sukina": "experiment", "face_detection": "experiment", "mlp": "experiment",
+    "distance": "experiment", "knn": "experiment",
 }
 
 

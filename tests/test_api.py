@@ -1675,10 +1675,10 @@ def test_preset_apply_endpoint_does_not_auto_confirm(client, monkeypatch):
     url = "/api/v1/courses/200000000001/settings-presets/apply"
     headers = {"X-CSRF-Token": csrf}
     response = client.post(url, headers=headers, json={
-        "preset_id": "kansou_lecture", "coursework_ids": ["100000000001"]})
+        "preset_id": "kansou", "coursework_ids": ["100000000001"]})
     assert response.status_code == 200
     body = response.json()
-    assert len(body["applied"]) == 1 and body["applied"][0]["preset_id"] == "kansou_lecture"
+    assert len(body["applied"]) == 1 and body["applied"][0]["preset_id"] == "kansou"
     saved = load_settings(api._cfg, "200000000001", "100000000001")
     assert saved["confirmed"] is False
     # maxPoints=10 なので確認済み基準と同じ配分になる
@@ -1696,3 +1696,32 @@ def test_preset_apply_endpoint_does_not_auto_confirm(client, monkeypatch):
 
     # 対象未指定は400
     assert client.post(url, headers=headers, json={"preset_id": "experiment"}).status_code == 400
+
+
+def test_web_ui_disables_actions_that_cannot_run():
+    """実行できない操作はボタンを無効化し、理由をtitleで示す。"""
+    import pathlib
+
+    js = pathlib.Path("grader/web/app.js").read_text(encoding="utf-8")
+    css = pathlib.Path("grader/web/style.css").read_text(encoding="utf-8")
+    # AI採点前はClassroom入力・結果確認を押せない
+    assert 'transfer.disabled=session.role==="viewer"||!graded;' in js
+    assert "const view=node(\"button\",\"結果を確認\");view.disabled=!graded;" in js
+    # 採点基準が未確認なら採点を開始できない(理由も表示)
+    assert 'if(!configured)full.title="採点基準を確認済みにするまで採点を開始できません。";' in js
+    # クイック操作も選択状態に応じて同期する
+    assert "function syncQuickButtons()" in js
+    # 無効なボタンは視覚的にも薄くする
+    assert "button:disabled" in css and "opacity: 0.45" in css
+
+
+def test_ranking_table_is_hidden_when_no_confirmed_scores():
+    """確定済みが無いときに列見出しだけの空表を描画しない。"""
+    import pathlib
+
+    js = pathlib.Path("grader/web/app.js").read_text(encoding="utf-8")
+    html = pathlib.Path("grader/web/index.html").read_text(encoding="utf-8")
+    assert 'id="ranking-wrap" class="table-wrap" hidden' in html
+    assert 'if(!d.rows.length){' in js
+    assert '$("ranking-wrap").hidden=true;' in js
+    assert '$("ranking-wrap").hidden=false;' in js

@@ -117,18 +117,17 @@ def test_presets_derive_from_confirmed_rubrics_and_scale_to_max_points():
     from grader.settings_presets import (
         build_settings, catalog, preset_for_assignment_key, preset_ids)
 
-    ids = preset_ids()
-    assert {"kansou_lecture", "kansou_summary", "research", "experiment",
-            "distance", "knn"} <= set(ids)
+    # 感想・調査系・演習系の3種に集約する
+    assert preset_ids() == ["kansou", "research", "experiment"]
     # 一覧には採点基準本文を含めない(UI表示用)
     for entry in catalog():
         assert set(entry) == {"id", "label", "description", "rubric_key"}
 
     # ソニー課題で確認済みの配分(0/8/9/10)を10点満点で再現する
-    lecture = build_settings("kansou_lecture", 10.0)
+    lecture = build_settings("kansou", 10.0)
     assert lecture["score_mapping"] == {"0": 0.0, "1": 8.0, "2": 9.0, "3": 10.0}
     # 満点が変わっても比率を保つ(単純な線形にはしない)
-    scaled = build_settings("kansou_lecture", 5.0)
+    scaled = build_settings("kansou", 5.0)
     assert scaled["score_mapping"] == {"0": 0.0, "1": 4.0, "2": 4.5, "3": 5.0}
     # 適用しただけでは確認済みにしない
     assert lecture["confirmed"] is False
@@ -139,9 +138,11 @@ def test_presets_derive_from_confirmed_rubrics_and_scale_to_max_points():
     assert experiment["score_mapping"] == {"0": 0.0, "1": 6.0, "2": 8.0, "3": 10.0}
 
     # 課題キーからの推定(config.yamlのassignmentsに対応)
-    assert preset_for_assignment_key("mlp_kansou") == "kansou_summary"
-    assert preset_for_assignment_key("tokubetsu0511") == "kansou_lecture"
-    assert preset_for_assignment_key("knn") == "knn"
+    assert preset_for_assignment_key("mlp_kansou") == "kansou"
+    assert preset_for_assignment_key("tokubetsu0511") == "kansou"
+    # 距離計算・k-NNの専用要求は適用後に個別調整する前提で演習系へ寄せる
+    assert preset_for_assignment_key("knn") == "experiment"
+    assert preset_for_assignment_key("distance") == "experiment"
     assert preset_for_assignment_key("unknown-key") is None
     assert preset_for_assignment_key(None) is None
 

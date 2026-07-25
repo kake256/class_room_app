@@ -35,3 +35,16 @@ tr.risk td:first-child { font-weight: 600; color: #9a3412; }
 .quick-actions { align-items: center; gap: 0.5rem; padding: 0.6rem; background: #f8fafc;
   border: 1px solid #e2e8f0; border-radius: 6px; }
 .quick-actions select { min-width: 20rem; }
+
+/* ランキング表: 見出しの折り返しで縦書きのように潰れるのを防ぐ */
+.ranking-table th { white-space: nowrap; }
+.ranking-table th.coursework-col {
+  max-width: 12rem; overflow: hidden; text-overflow: ellipsis;
+}
+.ranking-table td { white-space: nowrap; }
+
+/* 実行できない操作は明確に薄く見せる */
+button:disabled, .button.disabled {
+  opacity: 0.45; cursor: not-allowed; background: #e2e8f0; color: #64748b;
+  border-color: #cbd5e1;
+}

@@ -198,7 +198,7 @@
       <label>出力範囲 <input id="ranking-range" type="text" value="A1:Z1000"></label>
       <button id="ranking-export" type="button">Google Sheetsへ出力</button></div>
     <p id="ranking-message" class="hint" role="status"></p>
-    <div class="table-wrap"><table><thead id="ranking-head"></thead><tbody id="ranking-rows"></tbody></table></div>
+    <div id="ranking-wrap" class="table-wrap" hidden><table class="ranking-table"><thead id="ranking-head"></thead><tbody id="ranking-rows"></tbody></table></div>
   </section>
   <section><h2>Classroom下書き入力</h2>
     <p class="hint">現在の採点基準で正常に作成されたAI採点案は、答案ごとの確認操作なしで下書き対象になります。
