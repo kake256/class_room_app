@@ -203,21 +203,27 @@
       <label>出力範囲 <input id="ranking-range" type="text" value="A1:Z1000"></label>
       <button id="ranking-export" type="button">Google Sheetsへ出力</button></div>
     <p id="ranking-message" class="hint" role="status"></p>
-    <details id="ranking-detail" hidden>
-      <summary>課題ごとの点数内訳を表示</summary>
+    <nav class="subtabs" role="tablist" aria-label="ランキングの詳細表示">
+      <button id="subtab-breakdown" class="subtab active" role="tab"
+        aria-controls="subpanel-breakdown" aria-selected="true">課題ごとの点数内訳</button>
+      <button id="subtab-top" class="subtab" role="tab"
+        aria-controls="subpanel-top" aria-selected="false">各回の最高点者</button>
+    </nav>
+    <div id="subpanel-breakdown" role="tabpanel" aria-labelledby="subtab-breakdown">
       <p class="hint">「−1」は未提出（ペナルティ対象）、「—」は提出済みだが確定点がまだない課題です。
       課題名は省略表示されます（カーソルを合わせると全文が出ます）。</p>
-      <div class="table-wrap"><table class="ranking-table"><thead id="ranking-detail-head"></thead>
-        <tbody id="ranking-detail-rows"></tbody></table></div>
-    </details>
+      <div id="ranking-detail" class="table-wrap" hidden>
+        <table class="ranking-table"><thead id="ranking-detail-head"></thead>
+          <tbody id="ranking-detail-rows"></tbody></table></div>
+    </div>
+    <div id="subpanel-top" role="tabpanel" aria-labelledby="subtab-top" hidden>
+      <p class="hint">課題ごとの最高点と、その点を取った学生です（同点は全員）。確定済みの点だけが対象です。
+      氏名を押すと答案を開いて内容を確認できます（手本の共有可否は各自の判断で行ってください）。</p>
+      <div class="toolbar"><button id="top-scorers-refresh" type="button">最高点取得者を更新</button></div>
+      <p id="top-scorers-message" class="hint" role="status"></p>
+      <div id="top-scorers"></div>
+    </div>
     <div id="ranking-wrap" class="table-wrap" hidden><table class="ranking-table"><thead id="ranking-head"></thead><tbody id="ranking-rows"></tbody></table></div>
-  </section>
-  <section><h2>各回の最高点取得者</h2>
-    <p class="hint">課題ごとの最高点と、その点を取った学生です（同点は全員）。確定済みの点だけが対象です。
-    答案を開くと内容を確認できます（手本の共有可否は各自の判断で行ってください）。</p>
-    <div class="toolbar"><button id="top-scorers-refresh" type="button">最高点取得者を更新</button></div>
-    <p id="top-scorers-message" class="hint" role="status"></p>
-    <div id="top-scorers"></div>
   </section>
   <dialog id="answer-dialog">
     <h2 id="answer-title">答案</h2>

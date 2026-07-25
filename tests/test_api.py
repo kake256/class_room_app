@@ -1790,8 +1790,10 @@ def test_ranking_ui_separates_summary_from_per_coursework_scores():
 
     html = pathlib.Path("grader/web/index.html").read_text(encoding="utf-8")
     js = pathlib.Path("grader/web/app.js").read_text(encoding="utf-8")
-    # 内訳は折りたたみの別表へ分離する
+    # 内訳と最高点者はサブタブで切り替える
     assert 'id="ranking-detail"' in html and 'id="ranking-detail-head"' in html
+    assert 'id="subtab-breakdown"' in html and 'id="subtab-top"' in html
+    assert 'id="subpanel-breakdown"' in html and 'id="subpanel-top"' in html
     # 集計表の列
     for label in ("課題の平均点", "最高点回数", "提出数", "未提出数", "未確定数"):
         assert label in js
@@ -1896,6 +1898,12 @@ def test_web_ui_collapses_coursework_list_and_shows_top_scorers():
     assert '<details id="courses-details" open>' in html
     assert 'id="courses-summary"' in html
     assert 'id="top-scorers"' in html and 'id="answer-dialog"' in html
+    # 点数内訳と最高点者はタブで切り替える(既定は内訳)
+    assert "function selectRankingSubtab(name)" in js
+    assert 'RANKING_SUBPANELS={breakdown:"subpanel-breakdown",top:"subpanel-top"}' in js
+    assert 'id="subtab-breakdown" class="subtab active"' in html
+    # 最高点者タブを開いたときに初回だけ取得する
+    assert 'if(name==="top"&&!topScorersLoaded&&selectedCourseId)loadTopScorers();' in js
     assert "async function loadTopScorers(" in js
     assert "async function openAnswer(" in js
     # 折りたたんでも件数が分かる

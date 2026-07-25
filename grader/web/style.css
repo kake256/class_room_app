@@ -55,3 +55,12 @@ button:disabled, .button.disabled {
 #answer-body { max-height: 60vh; overflow: auto; }
 .answer-image { max-width: 100%; height: auto; border: 1px solid #cbd5e1; }
 #courses-summary { cursor: pointer; font-weight: 600; padding: .3rem 0; }
+
+/* ランキング内のサブタブ */
+.subtabs { display: flex; gap: .2rem; margin: .8rem 0 .4rem; border-bottom: 1px solid #e2e8f0; }
+.subtabs .subtab {
+  background: none; border: none; border-bottom: 2px solid transparent;
+  padding: .45rem .9rem; cursor: pointer; font-size: .95rem; color: #475569;
+}
+.subtabs .subtab:hover { background: #f1f5f9; }
+.subtabs .subtab.active { color: #0f172a; font-weight: 600; border-bottom-color: #64748b; }
