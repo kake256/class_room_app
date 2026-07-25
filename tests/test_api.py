@@ -1260,6 +1260,8 @@ def test_legacy_results_cannot_read_cross_course_report(client):
 def test_course_ranking_uses_only_confirmed_or_human_scores(client, tmp_path, monkeypatch):
     login(client)
     monkeypatch.setattr(api, "_classroom_for", lambda _identity: object())
+    # このテストはローカル集計だけを検証する。Classroom確定点の取り込みは別テスト。
+    monkeypatch.setattr(api, "_live_confirmed_grades", lambda *_a, **_k: {})
     monkeypatch.setattr("grader.fetch.list_courseworks", lambda *_args, **_kwargs: [
         {"id": "100000000001", "title": "課題1"},
         {"id": "100000000002", "title": "課題2"},
@@ -1725,3 +1727,53 @@ def test_ranking_table_is_hidden_when_no_confirmed_scores():
     assert 'if(!d.rows.length){' in js
     assert '$("ranking-wrap").hidden=true;' in js
     assert '$("ranking-wrap").hidden=false;' in js
+
+
+def test_settings_dialog_can_load_the_three_presets(client, monkeypatch):
+    """個別課題の設定ダイアログからも3種の既定テンプレを選べる。"""
+    import pathlib
+
+    csrf = login(client)
+    listing = client.get("/api/v1/settings-presets").json()
+    assert [p["id"] for p in listing["presets"]] == ["kansou", "research", "experiment"]
+
+    # 満点に合わせて展開し、確認済みにはしない
+    detail = client.get("/api/v1/settings-presets/kansou?max_points=10").json()
+    assert detail["settings"]["score_mapping"] == {"0": 0.0, "1": 8.0, "2": 9.0, "3": 10.0}
+    assert detail["settings"]["confirmed"] is False
+    assert client.get("/api/v1/settings-presets/bogus").status_code == 400
+
+    html = pathlib.Path("grader/web/index.html").read_text(encoding="utf-8")
+    js = pathlib.Path("grader/web/app.js").read_text(encoding="utf-8")
+    assert 'id="dialog-preset-select"' in html and 'id="dialog-preset-load"' in html
+    assert "async function loadDialogPreset()" in js
+    # 読み込んだだけでは確認済みにしない
+    assert "fillSettingsForm({...d.settings,confirmed:false});" in js
+    assert csrf
+
+
+def test_ranking_reads_confirmed_grades_from_classroom(client, monkeypatch, tmp_path):
+    """ランキング更新時にClassroomの確定点を取得してから集計する。"""
+    csrf = login(client)
+
+    calls = []
+
+    def fake_live(_identity, course_id, coursework_id):
+        calls.append(coursework_id)
+        # 集計CSVに無い学生(999)も確定点があれば集計対象にする
+        return {"111": 9.0, "999": 7.0}
+
+    monkeypatch.setattr(api, "_classroom_for", lambda _identity: object())
+    monkeypatch.setattr(api, "_live_confirmed_grades", fake_live)
+    monkeypatch.setattr("grader.fetch.list_courseworks",
+                        lambda *a, **k: [{"id": "100000000001", "title": "テスト課題"}])
+    response = client.get("/api/v1/courses/200000000001/ranking")
+    assert response.status_code == 200, response.json()
+    assert calls == ["100000000001"]
+    body = response.json()
+    ids = {row["student_id"] for row in body["rows"]}
+    assert "111" in ids and "999" in ids
+    scores = {row["student_id"]: row["total"] for row in body["rows"]}
+    # Classroomのassigned_gradeが正本として反映される
+    assert scores["111"] == 9.0 and scores["999"] == 7.0
+    assert csrf

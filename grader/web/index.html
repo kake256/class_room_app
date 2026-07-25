@@ -231,7 +231,16 @@
   </div>
   <dialog id="settings-dialog"><form id="settings-form">
     <h2 id="settings-title">採点基準</h2>
-    <fieldset><legend>採点基準テンプレート</legend>
+    <fieldset><legend>既定の採点基準から作成</legend>
+      <p class="hint">課題タイプを選ぶと、実運用で確定した基準をこのフォームへ流し込みます。
+      内容を確認・調整してから保存してください（読み込んだだけでは保存されません）。</p>
+      <div class="toolbar">
+        <select id="dialog-preset-select"><option value="">課題タイプを選択</option></select>
+        <button id="dialog-preset-load" type="button">フォームへ読み込む</button>
+      </div>
+      <p id="dialog-preset-message" class="hint" role="status"></p>
+    </fieldset>
+    <fieldset><legend>保存済みテンプレート</legend>
       <div class="toolbar"><select id="template-select"><option value="">テンプレートを選択</option></select>
         <button id="template-apply" type="button">フォームへ適用</button>
         <button id="template-create" type="button">現在の内容を新規保存</button>

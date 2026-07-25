@@ -977,8 +977,44 @@ def v1_course_overview(
         raise HTTPException(status_code=409, detail="課題一覧を安全に合成できません。") from exc
 
 
-def _course_ranking_table(identity: SessionIdentity, course_id: str) -> RankingTable:
-    """認可済みコースのローカルreportと現在利用者の確認結果だけを集計する。"""
+def _live_confirmed_grades(identity: SessionIdentity, course_id: str,
+                           coursework_id: str) -> dict[str, float]:
+    """Classroom上で確定済みのassignedGradeを取得する。
+
+    ランキングは「教員が確定した点」を集計するため、ローカルの集計CSVではなく
+    Classroomの現在値を正本として使う。draftGrade(AIが入れた下書きを含む)は
+    確定点ではないので読まない。
+    """
+    grades: dict[str, float] = {}
+    page_token = None
+    service = _classroom_for(identity)
+    while True:
+        response = service.courses().courseWork().studentSubmissions().list(
+            courseId=course_id, courseWorkId=coursework_id, pageToken=page_token,
+            fields="nextPageToken,studentSubmissions(userId,assignedGrade,state)",
+        ).execute()
+        for submission in response.get("studentSubmissions", []):
+            value = submission.get("assignedGrade")
+            if value is None:
+                continue
+            try:
+                grades[str(submission.get("userId") or "")] = float(value)
+            except (TypeError, ValueError):
+                continue
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+    grades.pop("", None)
+    return grades
+
+
+def _course_ranking_table(identity: SessionIdentity, course_id: str, *,
+                          refresh_from_classroom: bool = True) -> RankingTable:
+    """認可済みコースの確定点を集計する。
+
+    refresh_from_classroom=Trueなら、集計前にClassroomの確定点(assignedGrade)を
+    取得して反映する。AI採点の集計CSVが無い課題でも、確定点があれば集計対象にする。
+    """
     from .fetch import list_courseworks
 
     selected = _valid_course_id(course_id)
@@ -997,20 +1033,42 @@ def _course_ranking_table(identity: SessionIdentity, course_id: str) -> RankingT
             cw = _valid_coursework_id(str(item.get("id") or ""))
         except HTTPException:
             continue
+        live: dict[str, float] = {}
+        if refresh_from_classroom:
+            try:
+                live = _live_confirmed_grades(identity, selected, cw)
+            except HTTPException:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise _safe_classroom_error(exc, "確定済み成績") from exc
         report = CoursePaths(_cfg, selected, cw).read_path("report")
-        if not report.exists():
+        rows: list[dict[str, Any]] = []
+        if report.exists():
+            try:
+                frame = pd.read_csv(report, dtype={"student_id": str})
+            except Exception as exc:  # noqa: BLE001 report内容を応答へ含めない
+                raise HTTPException(
+                    status_code=409,
+                    detail="ランキング用の集計CSVを読み取れません。再集計してください。",
+                ) from exc
+            rows = frame.where(pd.notna(frame), None).to_dict(orient="records")
+        if live:
+            # Classroomの確定点を正本として反映する。集計CSVに無い学生も行を足す。
+            by_sid = {str(row.get("student_id") or ""): row for row in rows}
+            for sid, score in live.items():
+                row = by_sid.get(sid)
+                if row is None:
+                    row = {"student_id": sid, "name": sid}
+                    rows.append(row)
+                    by_sid[sid] = row
+                row["source"] = "human"
+                row["assigned_grade"] = score
+        if not rows:
             continue
-        try:
-            frame = pd.read_csv(report, dtype={"student_id": str})
-        except Exception as exc:  # noqa: BLE001 report内容を応答へ含めない
-            raise HTTPException(
-                status_code=409,
-                detail="ランキング用の集計CSVを読み取れません。再集計してください。",
-            ) from exc
         sources.append({
             "coursework_id": cw,
             "title": str(item.get("title") or cw),
-            "rows": frame.where(pd.notna(frame), None).to_dict(orient="records"),
+            "rows": rows,
             "reviews": _teacher_reviews.load_reference(
                 _identity_reference(identity), selected, cw),
         })
@@ -1290,6 +1348,22 @@ def v1_coursework_settings(
 def v1_settings_presets(_: SessionIdentity = Depends(require_session)) -> dict[str, Any]:
     """実運用で確定した採点基準をもとにした既定プリセット一覧。"""
     return {"presets": preset_catalog()}
+
+
+@app.get("/api/v1/settings-presets/{preset_id}")
+def v1_settings_preset_detail(
+    preset_id: str, max_points: float = 10.0,
+    _: SessionIdentity = Depends(require_session),
+) -> dict[str, Any]:
+    """個別課題のフォームへ流し込むための展開済みプリセット。
+
+    確認済みにはしない。教員がフォームで内容を確認して保存した時点で確定する。
+    """
+    try:
+        return {"preset_id": preset_id,
+                "settings": build_preset_settings(preset_id, float(max_points))}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/v1/courses/{course_id}/settings-presets/apply")

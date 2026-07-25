@@ -212,6 +212,8 @@ async function loadPresets(){
   if(!select)return;
   try{
     const d=await api("/api/v1/settings-presets").then(r=>r.json());
+    presetCatalog=d.presets;
+    renderDialogPresetOptions();
     select.replaceChildren();
     const placeholder=node("option","課題タイプを選択");placeholder.value="";select.append(placeholder);
     for(const preset of d.presets){
@@ -254,10 +256,38 @@ async function loadCourseworks(){selectedCourseId=$("course-select").value;$("co
 let settingsCoursework=null;let settingsMaxPoints=null;
 function readSettingsForm(){const body={notes:$("settings-notes").value,levels:{},score_mapping:{},late_penalty:Number($("late-penalty").value),confirmed:$("settings-confirmed").checked};for(let i=0;i<4;i++){body.levels[i]=$(`level-${i}`).value;body.score_mapping[i]=Number($(`map-${i}`).value)}return body}
 function fillSettingsForm(s){$("settings-notes").value=s.notes||"";for(let i=0;i<4;i++){$(`level-${i}`).value=s.levels?.[i]||"";$(`map-${i}`).value=s.score_mapping?.[i]??""}$("late-penalty").value=s.late_penalty??0;$("settings-confirmed").checked=Boolean(s.confirmed)}
-async function openSettings(c,maxPoints){settingsCoursework=c;settingsMaxPoints=maxPoints;const s=c.settings||{};$("settings-title").textContent=`採点基準 — ${c.title||c.id} (満点 ${maxPoints??"-"})`;fillSettingsForm(s);$("settings-error").textContent="";$("template-message").textContent="";$("settings-dialog").showModal();await loadTemplates()}
+async function openSettings(c,maxPoints){settingsCoursework=c;settingsMaxPoints=maxPoints;if($("dialog-preset-message")){$("dialog-preset-message").textContent="";$("dialog-preset-select").value=""}const s=c.settings||{};$("settings-title").textContent=`採点基準 — ${c.title||c.id} (満点 ${maxPoints??"-"})`;fillSettingsForm(s);$("settings-error").textContent="";$("template-message").textContent="";$("settings-dialog").showModal();await loadTemplates()}
 async function saveSettings(e){e.preventDefault();const body=readSettingsForm();try{await api(`/api/v1/courses/${selectedCourseId}/courseworks/${settingsCoursework.id}/settings`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});$("settings-dialog").close();await loadCourseworks()}catch(err){$("settings-error").textContent=err.message}}
 
 function updateTemplateButtons(){const selected=Boolean($("template-select").value),editable=session.role!=="viewer";$("template-apply").disabled=!selected||!editable;$("template-rename").disabled=!selected||!editable;$("template-delete").disabled=!selected||!editable;$("template-create").disabled=!editable}
+// 個別課題の設定ダイアログでも既定の採点基準を選べるようにする。
+// 保存済みテンプレート(コース内で作成したもの)とは別枠で提示する。
+let presetCatalog=[];
+function renderDialogPresetOptions(){
+  const select=$("dialog-preset-select");
+  if(!select)return;
+  select.replaceChildren();
+  const placeholder=node("option","課題タイプを選択");placeholder.value="";select.append(placeholder);
+  for(const preset of presetCatalog){
+    const option=node("option",preset.label);
+    option.value=preset.id;option.title=preset.description;
+    select.append(option);
+  }
+}
+async function loadDialogPreset(){
+  const message=$("dialog-preset-message");
+  const presetId=$("dialog-preset-select").value;
+  if(!presetId){message.textContent="課題タイプを選択してください。";return}
+  try{
+    const points=Number(settingsMaxPoints)||10;
+    const d=await api(`/api/v1/settings-presets/${encodeURIComponent(presetId)}`
+      +`?max_points=${encodeURIComponent(points)}`).then(r=>r.json());
+    // 確認チェックは引き継がない(内容を確認してから教員が付ける)
+    fillSettingsForm({...d.settings,confirmed:false});
+    message.textContent="フォームへ読み込みました。内容を確認・調整し、「確認済み」を付けて保存してください。";
+  }catch(e){message.textContent=e.message}
+}
+
 async function loadTemplates(preferred=""){const select=$("template-select");try{const d=await api(`/api/v1/courses/${encodeURIComponent(selectedCourseId)}/settings-templates`).then(r=>r.json());select.replaceChildren(new Option("テンプレートを選択",""),...d.templates.map(t=>new Option(t.name,t.id)));if(preferred&&d.templates.some(t=>t.id===preferred))select.value=preferred;$("template-message").textContent=d.templates.length?`${d.templates.length}件のコース用テンプレートがあります。`:"このコースのテンプレートはまだありません。"}catch(e){$("template-message").textContent=e.message}updateTemplateButtons()}
 async function createTemplate(){const name=prompt("新しいテンプレート名を入力してください");if(!name)return;try{const d=await api(`/api/v1/courses/${encodeURIComponent(selectedCourseId)}/settings-templates`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,coursework_id:settingsCoursework.id,settings:readSettingsForm()})}).then(r=>r.json());await loadTemplates(d.template.id);$("template-message").textContent="現在のフォーム内容をテンプレートへ保存しました。"}catch(e){$("template-message").textContent=e.message}}
 async function applyTemplate(){const id=$("template-select").value;if(!id)return;try{const d=await api(`/api/v1/courses/${encodeURIComponent(selectedCourseId)}/settings-templates/${encodeURIComponent(id)}/apply`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({coursework_id:settingsCoursework.id})}).then(r=>r.json());fillSettingsForm(d.settings);$("settings-confirmed").checked=false;$("template-message").textContent=`満点${settingsMaxPoints}点へ換算してフォームに反映しました。内容を確認し、確認チェックを付けて保存してください。`}catch(e){$("template-message").textContent=e.message}}
@@ -366,4 +396,4 @@ $("mcp-create").addEventListener("click",createMcpToken);$("mcp-copy").addEventL
 $("settings-form").addEventListener("submit",saveSettings);
 $("template-select").addEventListener("change",updateTemplateButtons);$("template-create").addEventListener("click",createTemplate);$("template-apply").addEventListener("click",applyTemplate);$("template-rename").addEventListener("click",renameTemplate);$("template-delete").addEventListener("click",deleteTemplate);
 $("ranking-spreadsheet").value=localStorage.getItem("cga-ranking-spreadsheet")||"";$("ranking-sheet").value=localStorage.getItem("cga-ranking-sheet")||"ランキング";$("ranking-range").value=localStorage.getItem("cga-ranking-range")||"A1:Z1000";
-$("google-login").addEventListener("click",connectGoogle);$("google-reconnect").addEventListener("click",connectGoogle);$("logout").addEventListener("click",logout);$("course-select").addEventListener("change",async()=>{await loadCourseworks();await loadRanking()});$("ranking-refresh").addEventListener("click",loadRanking);$("ranking-export").addEventListener("click",exportRanking);$("tab-grading").addEventListener("click",()=>selectTab("grading"));$("tab-mcp").addEventListener("click",()=>selectTab("mcp"));$("tab-extension").addEventListener("click",()=>selectTab("extension"));$("tab-jobs").addEventListener("click",()=>selectTab("jobs"));$("preset-apply").addEventListener("click",applyPreset);$("quick-coursework").addEventListener("change",syncQuickButtons);$("preset-select").addEventListener("change",syncQuickButtons);$("preset-all").addEventListener("change",syncQuickButtons);$("courses-refresh").addEventListener("click",loadCourseworks);$("quick-prepare").addEventListener("click",()=>runQuickJob("prepare"));$("quick-full").addEventListener("click",()=>runQuickJob("full"));$("search").addEventListener("input",renderRows);$("risk-only").addEventListener("change",renderRows);$("draft-preview").addEventListener("click",previewDraft);$("draft-transfer").addEventListener("click",transferDraft);$("draft-create").addEventListener("click",createDraft);$("csv").addEventListener("click",downloadCsv);window.addEventListener("message",e=>{if(e.origin!==location.origin||e.data?.type!=="classroom-oauth")return;notice=e.data.result==="success"?"Google Classroomに接続しました。":(e.data.message||"Google認証に失敗しました。");refresh()});selectTab(localStorage.getItem("cga-active-tab")||"grading");handleOAuthReturn();refresh();loadPresets().then(syncQuickButtons);
+$("google-login").addEventListener("click",connectGoogle);$("google-reconnect").addEventListener("click",connectGoogle);$("logout").addEventListener("click",logout);$("course-select").addEventListener("change",async()=>{await loadCourseworks();await loadRanking()});$("ranking-refresh").addEventListener("click",loadRanking);$("ranking-export").addEventListener("click",exportRanking);$("tab-grading").addEventListener("click",()=>selectTab("grading"));$("tab-mcp").addEventListener("click",()=>selectTab("mcp"));$("tab-extension").addEventListener("click",()=>selectTab("extension"));$("tab-jobs").addEventListener("click",()=>selectTab("jobs"));$("preset-apply").addEventListener("click",applyPreset);$("dialog-preset-load").addEventListener("click",loadDialogPreset);$("quick-coursework").addEventListener("change",syncQuickButtons);$("preset-select").addEventListener("change",syncQuickButtons);$("preset-all").addEventListener("change",syncQuickButtons);$("courses-refresh").addEventListener("click",loadCourseworks);$("quick-prepare").addEventListener("click",()=>runQuickJob("prepare"));$("quick-full").addEventListener("click",()=>runQuickJob("full"));$("search").addEventListener("input",renderRows);$("risk-only").addEventListener("change",renderRows);$("draft-preview").addEventListener("click",previewDraft);$("draft-transfer").addEventListener("click",transferDraft);$("draft-create").addEventListener("click",createDraft);$("csv").addEventListener("click",downloadCsv);window.addEventListener("message",e=>{if(e.origin!==location.origin||e.data?.type!=="classroom-oauth")return;notice=e.data.result==="success"?"Google Classroomに接続しました。":(e.data.message||"Google認証に失敗しました。");refresh()});selectTab(localStorage.getItem("cga-active-tab")||"grading");handleOAuthReturn();refresh();loadPresets().then(syncQuickButtons);
