@@ -296,11 +296,12 @@ Web UIで全答案を確認・修正して短期バッチを作った後、専�
 ## MCP（Codex / Claude Code連携）
 
 APIコンテナは`/mcp`にstateless Streamable HTTPのMCP endpointを配信する。Web UIと同じ
-Google利用者・教師コース認可を使い、**34 tool**を提供する。詳細と接続手順は
+Google利用者・教師コース認可を使い、**35 tool**を提供する。詳細と接続手順は
 **[docs/mcp.md](docs/mcp.md)** を参照する。
 
 できること:
 
+- `get_system_overview`でシステムの運用方針・採点基準・ランキング算出・禁止事項を取得
 - コース・課題一覧、準備状況、採点結果、ランキング、各回の最高点者の参照
 - 採点基準の設定（`confirm=false`は検証preview、`confirm=true`だけが保存）
 - 答案の準備・取得と採点案の一括保存

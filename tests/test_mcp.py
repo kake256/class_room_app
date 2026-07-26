@@ -17,6 +17,8 @@ def services(calls):
         return {"courses": [{"id": "123", "name": "Mock"}]}
 
     return McpServices(
+        get_system_overview=lambda principal, topic: {
+            "topics": [], "summary": "overview", "topic": topic},
         list_courses=lambda principal: record("list_courses", principal),
         list_courseworks=lambda principal, course_id: {"course_id": course_id, "courseworks": []},
         preview_classroom_assignment=lambda principal, course_id, title, description,
@@ -112,6 +114,7 @@ def test_sdk_initialize_list_read_confirm_and_forbidden_tools(tmp_path):
             listed = await client_scenario(app, made["token"], lambda session: session.list_tools())
             names = {tool.name for tool in listed.tools}
             assert names == {
+                "get_system_overview",
                 "list_courses", "list_courseworks", "get_readiness", "get_results",
                 "preview_classroom_assignment", "create_classroom_assignment_draft",
                 "publish_classroom_assignment", "preview_classroom_draft_grades",
@@ -134,6 +137,7 @@ def test_sdk_initialize_list_read_confirm_and_forbidden_tools(tmp_path):
                 "change_settings", "shell", "read_path",
             }
             annotations = {tool.name: tool.annotations for tool in listed.tools}
+            assert annotations["get_system_overview"].readOnlyHint is True
             assert annotations["list_courses"].readOnlyHint is True
             assert annotations["preview_classroom_assignment"].readOnlyHint is True
             assert annotations["create_classroom_assignment_draft"].idempotentHint is True

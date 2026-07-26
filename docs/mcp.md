@@ -57,6 +57,7 @@ claude mcp add --transport http classroom-grader https://YOUR-HOST.example/mcp \
 ## 提供tool
 
 - 読取専用（`readOnly=true`, `idempotent=true`）:
+  - `get_system_overview`（**最初に読む**。運用方針・採点基準・ランキング算出・禁止事項）
   - `list_courses`
   - `list_courseworks`
   - `preview_classroom_assignment`
@@ -94,7 +95,7 @@ claude mcp add --transport http classroom-grader https://YOUR-HOST.example/mcp \
   - `set_assignment_grading_policy`
   - `retry_classroom_draft_input_job`
 
-合計34 toolです。`create_classroom_assignment_draft`、`publish_classroom_assignment`、
+合計35 toolです。`create_classroom_assignment_draft`、`publish_classroom_assignment`、
 `create_classroom_announcement_draft`、`publish_classroom_announcement`、
 `write_classroom_draft_grades`、`export_ranking_to_sheets`、
 `start_full_grading`、`prepare_assignment_for_grading`、`create_draft_batch`、
@@ -103,6 +104,22 @@ claude mcp add --transport http classroom-grader https://YOUR-HOST.example/mcp \
 `set_assignment_grading_policy(confirm=false)`は検証・正規化previewだけで保存せず、`confirm=true`だけが
 保存します。`cancel_queued_job`は所有者本人のqueued jobだけが対象です。結果とランキングには件数上限が
 あり、学生情報はtoken所有者が教師認可を通過した範囲だけに限定されます。
+
+## MCP利用者への説明の提供
+
+MCPクライアントが得られるのはserver instructionsと各toolの一行説明だけで、運用の流れや
+禁止事項の理由までは伝わらない。そのため`get_system_overview`で読める説明を
+`grader/mcp_guide.py`へ定数として置いている。
+
+- topic未指定: 索引、標準運用（Qwen2.5単独1段階＋全件人間確認）、採点基準テンプレート一覧、
+  絶対制約、次に読むべきtopicの案内
+- `workflow` 採点の流れ / `policy` 禁止事項と安全条件 / `rubric` 採点基準の考え方 /
+  `ranking` ランキングの算出 / `authoring` 課題とお知らせの作成 / `glossary` 用語 /
+  `troubleshooting` よくある失敗と対処
+
+定数テキストだけで構成し、Classroomと`data/`を参照しない。学生氏名、答案本文、
+course_idなどの実データは含めない。採点基準テンプレートの内容は`settings_presets`から
+取り出して二重管理を避けている。
 
 ## MCPからの課題作成・公開
 

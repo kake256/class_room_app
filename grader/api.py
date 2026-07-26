@@ -2508,6 +2508,21 @@ def _announcement_body(text: str) -> dict[str, Any]:
 _ANNOUNCEMENT_FIELDS = "id,text,state,courseId,alternateLink"
 
 
+def _mcp_get_system_overview(
+    principal: McpPrincipal, topic: str | None,
+) -> dict[str, Any]:
+    """定数の説明文だけを返す。Classroomやdata/は参照しない。"""
+    from .mcp_guide import overview
+    if topic is not None and not isinstance(topic, str):
+        raise HTTPException(status_code=400, detail="topicは文字列で指定してください。")
+    if topic is not None and len(topic) > 64:
+        raise HTTPException(status_code=400, detail="topicが長すぎます。")
+    try:
+        return overview(topic)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def _mcp_preview_classroom_announcement(
     principal: McpPrincipal, course_id: str, text: str,
 ) -> dict[str, Any]:
@@ -3425,6 +3440,7 @@ _mcp_server, _mcp_http_app = build_mcp(
         preview_classroom_assignment=_mcp_preview_classroom_assignment,
         create_classroom_assignment_draft=_mcp_create_classroom_assignment_draft,
         publish_classroom_assignment=_mcp_publish_classroom_assignment,
+        get_system_overview=_mcp_get_system_overview,
         preview_classroom_announcement=_mcp_preview_classroom_announcement,
         create_classroom_announcement_draft=_mcp_create_classroom_announcement_draft,
         publish_classroom_announcement=_mcp_publish_classroom_announcement,

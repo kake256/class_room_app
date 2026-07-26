@@ -15,7 +15,7 @@ from mcp.server.auth.provider import AuthorizationParams
 from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyUrl
 
-from grader import api
+from grader import api, settings_presets
 from grader.audit import AuditLog
 from grader.config import Config
 from grader.coursework_actions import CourseworkActionStore
@@ -2023,3 +2023,34 @@ def test_oauth_scopes_include_announcements_and_require_reconsent():
     assert google_auth.ANNOUNCEMENTS_SCOPE not in SCOPES
     assert set(google_auth.ADDED_SCOPES) == {
         google_auth.SHEETS_SCOPE, google_auth.ANNOUNCEMENTS_SCOPE}
+
+
+def test_mcp_system_overview_explains_policy_without_touching_classroom(monkeypatch):
+    from grader import mcp_guide
+
+    principal = McpPrincipal("a" * 64, "grader")
+    # Classroom/data参照が無いことを、接続を壊した状態で確認する
+    monkeypatch.setattr(api, "_classroom_for", lambda _identity: pytest.fail(
+        "get_system_overviewはClassroomを参照してはならない"))
+    index = api._mcp_get_system_overview(principal, None)
+    assert {t["id"] for t in index["topics"]} == set(mcp_guide.topic_ids())
+    assert "採点案" in index["summary"]
+    assert "Qwen2.5" in index["standard_operation"]
+    # 採点基準テンプレートはsettings_presetsを唯一の出所とする
+    assert {p["id"] for p in index["grading_presets"]} == set(
+        settings_presets.PRESETS)
+    for topic in mcp_guide.topic_ids():
+        value = api._mcp_get_system_overview(principal, topic)
+        assert value["topic"] == topic and value["body"]
+    # 禁止事項と未提出ペナルティが説明に含まれる
+    assert any("相対評価" in line for line in
+               api._mcp_get_system_overview(principal, "policy")["body"])
+    assert any("-1/3" in line for line in
+               api._mcp_get_system_overview(principal, "ranking")["body"])
+    assert any("assignedGrade" in line for line in
+               api._mcp_get_system_overview(principal, "glossary")["body"])
+    with pytest.raises(api.HTTPException) as bad:
+        api._mcp_get_system_overview(principal, "../secrets")
+    assert bad.value.status_code == 400
+    with pytest.raises(api.HTTPException):
+        api._mcp_get_system_overview(principal, "x" * 65)
