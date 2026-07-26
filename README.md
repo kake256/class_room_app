@@ -5,31 +5,38 @@ VLM(vLLM + Qwen-VL)でマルチモーダル採点する半自動システム。
 全答案についてAIが採点案を作り、教員がWeb UIで確認・修正してからClassroomへ下書き入力する。**採点処理はすべてDockerで
 実行し、ホスト環境を汚さない**(GPUを使うのは vLLM コンテナのみ)。
 
-> **現在のMVP運用:** report内部の旧category名にかかわらず、AI出力はすべて「採点案」である。
+> **現在の標準運用:** **Qwen2.5-VL単独の1段階採点＋全答案の人間確認**。
+> report内部の旧category名にかかわらず、AI出力はすべて「採点案」である。
 > Web UIで教員が全答案を確認・修正した後、確認済みだけの短期バッチをMV3拡張でClassroomの
 > 空欄へ下書き入力する。自動確定・自動返却は行わず、最終確定と返却は教員がClassroomで行う。
-> 詳細は [docs/teacher-review-workflow.md](docs/teacher-review-workflow.md) を参照。
+> Qwen3-VLによる審判フェーズ(`refine`)は**診断・比較用**として単独実行のみ残し、一括採点
+> (`full`)には含めない。詳細は [docs/teacher-review-workflow.md](docs/teacher-review-workflow.md) を参照。
 
 ## 何をするか
 
 - 提出物を取得 → PDF化 → ページ画像化 → VLMで2回採点 → 集計
-- **2段階のハイブリッド採点**で「3点候補の見逃しゼロ」と「候補の絞り込み」を両立
 - 遅延・形式違反・未提出を自動仕分け、根拠(evidence)付きで出力
+- 課題種別ごとの採点基準を3種のテンプレートから一括適用し、課題ごとに個別調整できる
+- 確定点だけを使ったコースランキングをWeb UIとGoogle Sheetsへ出力
+- Codex / Claude CodeからMCPで課題・お知らせの下書き作成、採点、ランキング参照ができる
 - 成績の下書き入力は「採点API + 専用Chrome/Edge MV3拡張」でログイン済みブラウザから行う
 
 ## アーキテクチャ
 
 ```
-                 ┌── フェーズ1: 一次採点 (Qwen2.5-VL-7B) ── 甘め=見逃さない粗い網
- 提出物 ─ fetch ─┤
-                 └── フェーズ2: 審判 (Qwen3-VL-8B) ── judge再採点 + ペアワイズ比較で候補を絞る
-                                                          │
-                                    report(集計CSV/サマリ)┤
-                                                          └─ 採点API → ブラウザで成績簿に下書き点入力
+ 提出物 ─ fetch ─ 採点 (Qwen2.5-VL-7B、独立2回) ─ report(集計CSV/サマリ)
+                                                       │
+                        Web UIで教員が全答案を確認・修正 ┤
+                                                       └─ 採点API → ブラウザで成績簿に下書き点入力
+
+ [診断用・標準運用外] refine: 審判 (Qwen3-VL-8B) ── judge再採点 + ペアワイズ比較
 ```
 
-- **一次採点**は意図的に甘く、人間が3点にする答案を取りこぼさない(高recall)
-- **審判フェーズ**が判別力の高いモデルで 0/1/2 の確定点を高精度化し、3点候補を絞り込む
+- 標準は**Qwen2.5単独の1段階採点**で、全答案を教員が確認する。一括採点`full`は
+  `run` → `report` だけを実行する
+- 審判フェーズ`refine`はモデル比較・診断のために残してあり、`full`からは呼ばれない。
+  ベンチマークではQwen3の精度優位が図表を含む答案に集中する一方、復号が遅く
+  常用に見合わないと判断した
 - 詳しい検証根拠は `docs/calibration-policy.md`(ローカル、gitignore)
 
 ---
@@ -86,7 +93,14 @@ Google Cloud Consoleの「承認済みのリダイレクトURI」にこのURL（
 スコープ: `openid` / `userinfo.email`（Web UIログインの本人確認） /
 `classroom.courses.readonly`（教師の担当コース一覧） /
 `classroom.coursework.students`(下書き点書き込みに必要) /
-`rosters.readonly` / `drive.readonly`
+`rosters.readonly` / `drive.readonly` /
+`spreadsheets`(ランキングのGoogle Sheets出力) /
+`classroom.announcements`(MCPからのお知らせ下書き作成・公開)
+
+後半2つはWeb OAuth（`grader/google_auth.py` の `OAUTH_SCOPES`）だけに追加し、CLI用の
+`SCOPES`と共有`token.json`には追加しない。既存トークンにはこれらが無いため、UIに案内が
+出た場合は「Google権限を再接続」から一度だけ再同意する。Google Cloud Console側でも
+Sheets APIの有効化と、同意画面へのスコープ登録が必要である。
 
 担当コースはClassroom API `courses.list` を `teacherId="me"` および
 `courseStates=["ACTIVE"]` でページング取得する。サーバーは課題一覧取得と採点ジョブ開始のたびに
@@ -126,24 +140,31 @@ assignments:
 
 ## 採点の実行(フルフロー)
 
-vLLMサーバはモデルを切り替えて2フェーズで使う(すべてDockerでGPUを使うのはこれのみ):
+標準運用はQwen2.5単独の1段階採点である(DockerでGPUを使うのはvLLMコンテナのみ):
 
 ```bash
-# フェーズ1: 一次採点
-./run.sh serve q25-7b                   # 一次採点モデルのvLLMを起動
+./run.sh serve q25-7b                   # 採点モデルのvLLMを起動
 ./run.sh run <courseWorkId>             # fetch → render → 2回採点
 #   感想文寄りの課題を甘めに採点したいとき:
 docker compose run --rm grader run --coursework <courseWorkId> --lenient
-
-# フェーズ2: 審判(0/1/2の確定点向上 + 3点候補の絞り込み)
-./run.sh serve q3-8b                    # 審判モデルに切り替え
-./run.sh refine <courseWorkId>          # judge再採点 + ペアワイズ比較
-#   基準答案(anchor)をコマンドで指定する場合:
-./run.sh refine <courseWorkId> <anchor_student_id>
-
-# 集計
 ./run.sh report <courseWorkId>          # サマリ表示 + data/report/<cw>.csv
 ```
+
+この後はWeb UIで全答案を確認・修正する。Web UIの「AI採点案を作成」(`full`)は
+`run` → `report` を順に実行する。
+
+<details>
+<summary>診断用: 審判フェーズ(refine)を単独で実行する</summary>
+
+標準運用では使わない。モデル比較や採点傾向の調査のときだけ実行する。
+
+```bash
+./run.sh serve q3-8b                    # 審判モデルに切り替え
+./run.sh refine <courseWorkId>          # judge再採点 + ペアワイズ比較
+./run.sh refine <courseWorkId> <anchor_student_id>   # 基準答案を指定する場合
+./run.sh serve q25-7b                   # 終了後は標準モデルへ戻す
+```
+</details>
 
 `report` の出力 CSV / サマリ:
 
@@ -223,24 +244,43 @@ Google OAuthと公開時の安全設定は
 **[docs/tailscale-funnel.md](docs/tailscale-funnel.md)**を参照する。既存の
 `docker-compose.tailscale.yml`はvLLMへ到達できないlegacy構成で、新規運用では使用しない。
 
+画面は**採点 / MCP / ジョブ / 拡張機能**のタブに分かれている。課題の取得と採点基準の
+一括適用は「採点」タブ最上部に集約され、課題一覧は既定で折りたたまれている。
+実行条件を満たさない操作（採点基準未設定での採点開始、AI採点案が無い状態での結果確認など）は
+ボタンが無効化される。
+
 - GoogleログインとClassroom OAuth接続（一度の同意操作）
 - 教師として参加中のACTIVEコース一覧と、選択コースの課題一覧
 - ルーブリック未登録課題の警告（自動推定せず採点開始を無効化）
+- 採点基準テンプレート3種（感想／調査系／演習系）の一括適用と、課題ごとの個別調整
 - 課題ごとの教師備考、0/1/2/3点条件、Classroom実点mapping、遅延減点の設定
 - コース内で採点基準テンプレートを保存・適用・名前変更・削除し、課題満点へ非線形mappingを換算
 - 集計前の提出・人間採点・システム採点・未処理件数の確認
-- 待ち行列の順番表示と、自分の待機中ジョブの取り消し
-- `run`（一次採点）、`refine`（審判）、`report`（集計）の起動
-- `run`実行時の「課題モード（strict）」／「感想文モード（lenient）」切り替え
-- 永続化されたジョブ状態・ログの確認
+- `run`（採点）、`report`（集計）、`full`（`run`→`report`）の起動と姿勢の切り替え
+- 「ジョブ」タブでの待ち行列・永続ジョブ状態・ログの確認と、待機中ジョブの取り消し
 - category別集計、要確認答案、根拠・flagsの確認とCSV取得
-- 教員確認済み点と人間採点だけを使ったコースランキング（同点同順位）
+- コースランキング（**ランキング / 各回の最高点者 / 各回の0点＆未提出者 / 各回の詳細**の4タブ）
+- 答案ダイアログでの内容確認（最高点者・0点者の答案をページ送りで確認）
 - 明示確認後のGoogle Sheets出力（URL/ID、シート名、出力範囲を画面で指定）
+
+### コースランキングの算出
+
+**Classroomで確定した点（`assignedGrade`）とWeb UIで教員が確認した点だけ**を集計する。
+AI採点案は含めない。ランキング更新時はClassroomから確定点を取得してから集計する。
+
+- 順位は課題ごとの得点率の平均（`得点 / 満点`）で決まり、同点は同順位（competition ranking）
+- **未提出は −1/3 のペナルティ**（`grader/ranking.py` `MISSING_PENALTY_RATE`）。
+  提出したうえでの0点（0.0）より不利になる
+- 未確定の課題は分母から除外する（まだ採点していない回で不利にならない）
+- 提出数・最高点回数・未提出数を各行に表示する
+- 集計結果は既定180秒キャッシュする（`ranking.cache_ttl_seconds`）。
+  「更新」ボタンでキャッシュを無視して再取得できる
 
 Google Sheets出力ではWeb OAuthだけにSheets書込scopeを追加する。従来のWebログイントークンには
 このscopeがないため、UIに案内が表示された場合は「Google権限を再接続」から一度だけ再同意する。
 CLI用のOAuth scopeと共有`token.json`は変更しない。Sheets APIはGoogle Cloud Consoleで別途有効化し、
 出力先スプレッドシートをログイン中のGoogleアカウントへ共有しておく。
+お知らせ投稿用の`classroom.announcements`も同じ再接続で同意する。
 
 採点基準ダイアログでは、現在のフォーム内容をコース専用テンプレートとして保存できる。
 テンプレート適用はフォームへ反映するだけで、課題設定を自動保存しない。適用直後は必ず未確認へ戻るため、
@@ -248,9 +288,37 @@ CLI用のOAuth scopeと共有`token.json`は変更しない。Sheets APIはGoogl
 専用MV3拡張はWeb UIの「専用Chrome/Edge拡張をダウンロード」からZIPで取得できる。
 ZIPには固定allowlistの拡張ファイルだけが入り、設定値、token、学生データ、テストは含まれない。
 
-一括採点では、APIと分離したallowlist型`model-controller`が一次モデルと審判モデルを切り替える。
+一括採点では、APIと分離したallowlist型`model-controller`が採点モデル(`q25-7b` / `q3-8b` /
+`minicpm-v45`のallowlist)を管理する。標準運用ではQwen2.5のまま切り替えない。
 Web UIで全答案を確認・修正して短期バッチを作った後、専用MV3拡張がClassroomの空欄へ
 下書き入力する。最終確定・返却はClassroom上で教員が行う。
+
+## MCP（Codex / Claude Code連携）
+
+APIコンテナは`/mcp`にstateless Streamable HTTPのMCP endpointを配信する。Web UIと同じ
+Google利用者・教師コース認可を使い、**34 tool**を提供する。詳細と接続手順は
+**[docs/mcp.md](docs/mcp.md)** を参照する。
+
+できること:
+
+- コース・課題一覧、準備状況、採点結果、ランキング、各回の最高点者の参照
+- 採点基準の設定（`confirm=false`は検証preview、`confirm=true`だけが保存）
+- 答案の準備・取得と採点案の一括保存
+- **課題の下書き作成・公開**（`preview` → `create ..._draft` → `publish`）
+- **お知らせの下書き作成・公開**（同じ3段階。本文のみ、全学生向け）
+- ランキングのGoogle Sheets出力
+
+Classroomへ直接書き込むのは、明示確認済みの課題・お知らせの下書き作成・公開と、
+同じMCP利用者が本システムで作成した課題の空欄`draftGrade`入力だけである。
+**成績確定・返却・提出取消は提供しない。** 書き込み系toolは`confirm=true`が無い限り拒否し、
+作成系は`idempotency_key`で重複作成を防ぐ。
+
+お知らせは課題と同じ手順だが、Announcements APIには`associatedWithDeveloper`が無いため、
+**「同じMCP利用者が本システムから作成した」作成履歴だけを所有の根拠**とし、記録の無い
+お知らせは本文が完全一致しても公開しない。添付・リンク素材と個別配信、予約投稿、
+投稿後の編集・削除は提供しない。
+
+---
 
 採点モードは採点姿勢（厳密／甘め）を切り替える。EXPERIMENT/KANSOU/EFFORT等の
 ルーブリック種別は`assignments`設定から課題ごとに自動選択され、採点モードとは別概念である。
@@ -266,7 +334,7 @@ Webジョブの新規データは
 人間の`draftGrade`/`assignedGrade`は0点も含めて保護し、拡張による下書き入力対象から除外する。
 
 `run`/`refine`開始直前にGPU上のモデルIDと応答を再確認する。一括採点`full`では、APIと
-分離したallowlist型`model-controller`へ切替要求を送り、一次採点、審判、集計を順に実行する。
+分離したallowlist型`model-controller`へ切替要求を送り、採点(`run`)と集計(`report`)を順に実行する。
 APIコンテナへDocker socketは渡さない。
 
 コンテナは既定でUID/GID `1000:1000`として動く。実行ホストが異なる場合は `.env` に
@@ -301,7 +369,7 @@ APIコンテナへDocker socketは渡さない。
   審判フェーズ未実施の答案は一次採点自身が書いた flags(判断に迷った旨の自由記述)も
   レビュー行きの根拠にするが、審判フェーズ実施済みなら judge との突き合わせ(下記)に委ねる
   (自由記述flagsだけで機械的にレビュー行きにしない)
-- 審判フェーズ: judge が 0/1/2 を高精度化(judge観点合計を優先)、ペアワイズで候補を降格
+- 審判フェーズ(`refine`、診断用): judge が 0/1/2 を高精度化(judge観点合計を優先)、ペアワイズで候補を降格
   (両順負け/tieのみ)、judge観点合計が閾値未満の候補も降格。人間3点の見逃しゼロを維持。
   ペアワイズ比較の評価軸は課題種別(EXPERIMENT/KANSOU/EFFORT)ごとに切り替える
   (`grader/pairwise.py` `PAIRWISE_PROMPTS`)。実験課題向けの軸(定量評価・考察の深さ)を
@@ -317,9 +385,9 @@ APIコンテナへDocker socketは渡さない。
 ```
 ./run.sh test                             ユニットテスト
 ./run.sh list                             課題一覧(courseWorkId確認)
-./run.sh serve {q25-7b|q3-8b|stop|status} vLLMサーバのモデル切り替え
+./run.sh serve {q25-7b|q3-8b|minicpm-v45|stop|status}  vLLMサーバのモデル切り替え
 ./run.sh run <cw> [--lenient]             一次採点(fetch→render→grade)
-./run.sh refine <cw> [anchorId]           審判フェーズ(judge再採点+ペアワイズ)
+./run.sh refine <cw> [anchorId]           審判フェーズ(診断用。標準運用では使わない)
 ./run.sh report <cw>                       集計CSV+サマリ
 ./run.sh verify <cw> [truth.csv]          過去課題で人間の成績と傾向比較
 ./run.sh calibrate [dir] [truth.csv]      ローカルPDFでキャリブレーション
@@ -335,7 +403,8 @@ APIコンテナへDocker socketは渡さない。
 ## ディレクトリ
 
 ```
-grader/            採点ロジック(fetch/render/grade/pairwise/report/push/api …)
+grader/            採点ロジック(fetch/render/grade/report/api/mcp_server/ranking/settings_presets …)
+grader/web/        Web UI(index.html / app.js / style.css)
 extension/         現行のClassroom下書き入力用Chrome/Edge MV3拡張
 browser/           legacy互換用ユーザースクリプト（現行運用では非推奨）
 gateway/           固定HTTPS URL用gatewayと251 outbound agent
